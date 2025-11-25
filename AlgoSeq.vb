@@ -101,6 +101,7 @@ Public Class AlgoSeq
 
             Case Else
         End Select
+        Return 0
     End Function
 
 End Class
