@@ -34,83 +34,57 @@ Public Class AlgoSeq2
 
         'getMakeSpan(preactorComObject)
 
-        'orderTable = preactor.GetFormatNumber("Orders")
-        'recNo = preactor.RecordCount("Orders")
-        'Dim opTimesField As Integer = preactor.GetFieldNumber("Orders", "Op. Time per Item")
-        ''opTimes2 = CStr(preactor.GetFieldType("Orders", "Op. Time per Item"))
-        'For a As Integer = 0 To recNo
-        '    'opTimes = preactor.ReadFieldString("Orders", opTimesField, recNo)
-        '    opTimes2 = preactor.ReadFieldDouble("Orders", opTimesField, recNo)
-        '    duration = TimeSpan.FromDays(opTimes2)
 
+        'Dim connectionString = preactor.ParseShellString("{DB CONNECT STRING}")
 
+        '' Create a connection to the database
+        'Dim connection = New SqlConnection(connectionString)
 
-        '    MsgBox(duration.ToString())
-        'Next
-        'preactor.DisplayStatus("", orderTable.ToString())
-        'Debug.WriteLine(orderTable.ToString())
-        'MsgBox(opTimes2)
-        'Debug.WriteLine(opTimes2)
-        ''MsgBox(orderTable.ToString())
-        ''MsgBox(recNo.ToString())
-        ''MsgBox(opTimesField.ToString())
+        '' Open the connection
+        'connection.Open()
 
+        '' Define the sql to select the calendar states
+        'Dim sql = "SELECT " +
+        '"[Id], [Name], [Color], [Pattern], [Efficiency], [CostFactor], [IsSetupAllowed] " +
+        '"FROM " +
+        '"[Calendar].[CalendarStates]"
 
-        'Dim makespans = CalculateMakespans(preactor)
+        '' Create a new command
+        'Dim command = New SqlCommand(sql, connection)
 
-        'For Each row In makespans
-        '    MsgBox($"OrderRec={row.Item1}, Order={row.Item2}, Makespan={row.Item3}")
-        'Next
-        ' AlgoSeq2.ListAllClassificationStrings(preactor)
+        '' Execute the command and get a reader
+        'Dim reader = command.ExecuteReader()
 
-        Dim connectionString = preactor.ParseShellString("{DB CONNECT STRING}")
+        '' Get the ordinals for the fields we are interested in
+        'Dim efficiencyOrdinal = reader.GetOrdinal("Efficiency")
+        'Dim nameOrdinal = reader.GetOrdinal("Name")
 
-        ' Create a connection to the database
-        Dim connection = New SqlConnection(connectionString)
+        '' Create a new string builder
+        'Dim result = New StringBuilder()
 
-        ' Open the connection
-        connection.Open()
+        '' Loop through all of the rows
+        'While (reader.Read())
 
-        ' Define the sql to select the calendar states
-        Dim sql = "SELECT " +
-        "[Id], [Name], [Color], [Pattern], [Efficiency], [CostFactor], [IsSetupAllowed] " +
-        "FROM " +
-        "[Calendar].[CalendarStates]"
+        '    ' Get the state name and efficiency
+        '    Dim stateName = reader.GetString(nameOrdinal)
+        '    Dim efficiency = reader.GetDouble(efficiencyOrdinal) * 100
 
-        ' Create a new command
-        Dim command = New SqlCommand(sql, connection)
+        '    ' Create a string like: StateName (100%)
+        '    Dim format = String.Format("{0} ({1}%)", stateName, efficiency)
 
-        ' Execute the command and get a reader
-        Dim reader = command.ExecuteReader()
+        '    ' Add it to the result
+        '    result.AppendLine(format)
 
-        ' Get the ordinals for the fields we are interested in
-        Dim efficiencyOrdinal = reader.GetOrdinal("Efficiency")
-        Dim nameOrdinal = reader.GetOrdinal("Name")
+        'End While
 
-        ' Create a new string builder
-        Dim result = New StringBuilder()
+        '' Close the connection
+        'connection.Close()
 
-        ' Loop through all of the rows
-        While (reader.Read())
+        '' Display in a message box all of the states and their efficiencies
+        'MessageBox.Show(result.ToString())
 
-            ' Get the state name and efficiency
-            Dim stateName = reader.GetString(nameOrdinal)
-            Dim efficiency = reader.GetDouble(efficiencyOrdinal) * 100
-
-            ' Create a string like: StateName (100%)
-            Dim format = String.Format("{0} ({1}%)", stateName, efficiency)
-
-            ' Add it to the result
-            result.AppendLine(format)
-
-        End While
-
-        ' Close the connection
-        connection.Close()
-
-        ' Display in a message box all of the states and their efficiencies
-        MessageBox.Show(result.ToString())
-
+        Dim dbconnectioninstance As New DBConnection()
+        Dim result1 As Integer = dbconnectioninstance.GetConnect(preactorComObject)
 
         Return 0
     End Function
