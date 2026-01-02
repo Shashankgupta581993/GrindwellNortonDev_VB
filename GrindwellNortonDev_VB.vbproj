@@ -79,15 +79,13 @@
   <ItemGroup>
     <Compile Include="AlgoSeq.vb" />
     <Compile Include="AlgoSeq2.vb" />
+    <Compile Include="Class[newlogic].vb" />
+    <Compile Include="CustomAction1.vb" />
+    <Compile Include="CustomAction[csv].vb" />
     <Compile Include="DBConnection.vb" />
     <Compile Include="EventSeq.vb" />
     <Compile Include="EventSeq2.vb" />
-    <Compile Include="Form1.Designer.vb">
-      <DependentUpon>Form1.vb</DependentUpon>
-    </Compile>
-    <Compile Include="Form1.vb">
-      <SubType>Form</SubType>
-    </Compile>
+    <Compile Include="Module[createtemplate].vb" />
     <Compile Include="MyProject\AssemblyInfo.vb" />
     <Compile Include="MyProject\Application.Designer.vb">
       <AutoGen>True</AutoGen>
@@ -106,9 +104,6 @@
     <Compile Include="Preactor Extensions.vb" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="Form1.resx">
-      <DependentUpon>Form1.vb</DependentUpon>
-    </EmbeddedResource>
     <EmbeddedResource Include="MyProject\Resources.resx">
       <Generator>VbMyResourcesResXFileCodeGenerator</Generator>
       <LastGenOutput>Resources.Designer.vb</LastGenOutput>

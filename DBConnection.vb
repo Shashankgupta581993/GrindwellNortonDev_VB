@@ -13,12 +13,16 @@ Imports System.Linq
 
 
 Public Class DBConnection
+
+    Private _connectionString As String
+
     Public Function GetConnectionString(ByRef preactorComObject As PreactorObj) As String
 
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
 
         ' Get the connection string
         Dim connectionString = preactor.ParseShellString("{DB CONNECT STRING}")
+        _connectionString = connectionString
         Return connectionString
     End Function
     Public Function GetConnect(ByRef preactorComObject As PreactorObj) As Integer
@@ -77,14 +81,14 @@ Public Class DBConnection
     End Function
 
     ' 1) Generic: return results as DataTable
-    Public Function ExecuteDataTable(sql As String,
+    Public Function ExecuteDataTable(sql As String, ByRef preactorComObject As PreactorObj,
                                      Optional parameters As IEnumerable(Of SqlParameter) = Nothing,
                                      Optional commandType As CommandType = CommandType.Text) As DataTable
-
+        _connectionString = GetConnectionString(preactorComObject)
 
         Dim dt As New DataTable()
 
-        Using conn As New SqlConnection(_connectionstring)
+        Using conn As New SqlConnection(_connectionString)
             Using cmd As New SqlCommand(sql, conn)
                 cmd.CommandType = commandType
 

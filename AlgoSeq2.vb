@@ -25,10 +25,7 @@ Public Class AlgoSeq2
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
-        Dim orderTable As Integer
         Dim recNo As Integer = 0
-        Dim orderNo As String
-        Dim opTimes As String
         Dim opTimes2 As Double 'Nullable(Of Preactor.OperationTimes)
         Dim duration As TimeSpan
 
@@ -83,11 +80,66 @@ Public Class AlgoSeq2
         '' Display in a message box all of the states and their efficiencies
         'MessageBox.Show(result.ToString())
 
-        Dim dbconnectioninstance As New DBConnection()
-        Dim result1 As Integer = dbconnectioninstance.GetConnect(preactorComObject)
+        ' ### this is connection to the DBconnection using class instance method'
+        'Dim dbconnectioninstance As New DBConnection()
+        'Dim result1 As Integer = dbconnectioninstance.GetConnect(preactorComObject)
+
+        '''--------
+        'Dim db As New DBConnection()
+
+        'Dim sql As String = "Select OrdersId, Orderno, PartNo, Product,  OpNo, OperationName, SetupTime, IIF(BatchTime is not null,ROUND(BatchTime*24,1),ROUND(OpTimePerItem*24 ,1)) as [CalculatedTime]" +
+        '                    ", ROUND(OpTimePerItem*24,1) as OpTimePerTime, ROUND(BatchTime*24,1) as [BatchTime]" +
+        '                    ", DueDate, Quantity, Priority, DeliveryBuffer, StringAttribute3 from UserData.Orders where DatasetId=15"
+        ''       Select Case OrdersId, Orderno, PartNo, Product,  OpNo, OperationName, SetupTime, IIF(BatchTime Is Not null,ROUND(BatchTime*24,1),ROUND(OpTimePerItem*24,1)) As [CalculatedTime]
+        '', ROUND(OpTimePerItem*24,1) as OpTimePerTime, ROUND(BatchTime*24,1) as [BatchTime]
+        '',(sum(IIF(BatchTime Is Not null,ROUND(EffectiveOpTime*24,1),ROUND(OpTimePerItem*24,1))) over (partition by OrderNo))/24 as [TotalTime]
+        '', DueDate, Quantity, Priority, DeliveryBuffer, StringAttribute3 from UserData.Orders where DatasetId=15
+
+        'Dim parameters As New List(Of SqlParameter) From {
+        '    New SqlParameter("@IsActive", SqlDbType.Bit) With {.Value = True}
+        '}
+
+        'Dim dt As DataTable = db.ExecuteDataTable(sql, preactorComObject)
+        'PrintDataTable(dt)
+        '' dt is your "table structure" that you can use anywhere (bind to grid, loop, etc.)
+        'ExportDataTableToCsv(dt, "DataExportTable2")
+
+        'CsvTemplateGenerator.CreateCyclePlannerCsvTemplates("C:\Temp\VitrifiedCycleTest")
+        '''--------
+
+        Dim reader As New CsvRoutingReader()
+        Dim routingDt As DataTable = reader.ReadRoutingCsv()
+        reader.AddExpectedFiringStartDate(routingDt)
+        reader.AddFiringWeekAndBatchColumns(routingDt, 0.8, 1)
+        ExportDataTableToCsv(routingDt, "output1")
+
+        ' Example: loop through rows
+        For Each row As DataRow In routingDt.Rows
+            Debug.WriteLine(row(0).ToString())
+        Next
+
 
         Return 0
     End Function
+
+
+    Public Sub PrintDataTable(dt As DataTable)
+        Debug.WriteLine("------ DATA TABLE ------")
+
+        ' Print header
+        Dim header As String = String.Join(" | ", dt.Columns.Cast(Of DataColumn).Select(Function(c) c.ColumnName))
+        Debug.WriteLine(header)
+
+        ' Print rows
+        For Each row As DataRow In dt.Rows
+            Dim line As String = String.Join(" | ", row.ItemArray.Select(Function(v) v.ToString()))
+            Debug.WriteLine(line)
+        Next
+
+        Debug.WriteLine("-------------------------")
+    End Sub
+
+
 
     Public Function CalculateMakespans(preactor As IPreactor) _
                                        As List(Of Tuple(Of Integer, String, TimeSpan))
@@ -258,7 +310,7 @@ Public Class AlgoSeq2
         'Next
 
         'Console.ReadLine()
-        ExportDataTableToCsv(dt)
+        ExportDataTableToCsv(dt, "ExportData")
         Return 0
     End Function
 
@@ -314,8 +366,9 @@ Public Class AlgoSeq2
     End Function
 
     ' Exports a DataTable to a CSV file in the local directory as "DataTableExport.csv".
-    Public Sub ExportDataTableToCsv(dt As DataTable)
-        Dim filePath As String = Path.Combine(Directory.GetCurrentDirectory(), "DataTableExport.csv")
+    Public Sub ExportDataTableToCsv(dt As DataTable, fileName As String)
+        fileName &= ".csv"
+        Dim filePath As String = Path.Combine(Directory.GetCurrentDirectory(), fileName)
         Using writer As New StreamWriter(filePath)
             ' Write headers
             Dim columnNames = dt.Columns.Cast(Of DataColumn)().Select(Function(col) col.ColumnName)
@@ -327,6 +380,8 @@ Public Class AlgoSeq2
             Next
         End Using
     End Sub
+
+
 
 End Class
 
