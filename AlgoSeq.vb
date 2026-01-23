@@ -25,6 +25,14 @@ Public Class AlgoSeq
         opRec = 0
         CreateRankedParentQueue(preactor, planningboard, ordersTable, "JobsQueue")
 
+        ' --- DEBUG: snapshot the JobsQueue contents (operation record numbers) ---
+        Dim jobsQueueSnapshot As List(Of Integer) = GetQueueSnapshot(planningboard, "JobsQueue")
+
+        ' Put a breakpoint here and inspect:
+        '   jobsQueueSnapshot
+        ' It will contain the opRec values currently in JobsQueue, in queue order.
+
+
         While (planningboard.GetOperationInQueue("JobsQueue", 1, opRec))
 
             planningboard.RemoveOperationFromQueue("JobsQueue", opRec)
@@ -103,6 +111,26 @@ Public Class AlgoSeq
         End Select
         Return 0
     End Function
+
+    ' Returns the current contents of a PlanningBoard queue as a list of operation record numbers,
+    ' in queue order (position 1, 2, 3, ...). This does NOT modify the queue.
+    Private Function GetQueueSnapshot(ByVal planningboard As IPlanningBoard, ByVal queueName As String) As List(Of Integer)
+
+        Dim snapshot As New List(Of Integer)()
+
+        Dim pos As Integer = 1
+        Dim opRec As Integer = 0
+
+        ' GetOperationInQueue(queueName, position, opRec) returns True if an item exists at that position
+        ' and sets opRec to the record number. When there are no more items, it returns False.
+        While planningboard.GetOperationInQueue(queueName, pos, opRec)
+            snapshot.Add(opRec)
+            pos += 1
+        End While
+
+        Return snapshot
+    End Function
+
 
 End Class
 

@@ -84,7 +84,7 @@
     <Compile Include="CustomAction[csv].vb" />
     <Compile Include="DBConnection.vb" />
     <Compile Include="EventSeq.vb" />
-    <Compile Include="EventSeq2.vb" />
+    <Compile Include="Helper.vb" />
     <Compile Include="Module[createtemplate].vb" />
     <Compile Include="MyProject\AssemblyInfo.vb" />
     <Compile Include="MyProject\Application.Designer.vb">

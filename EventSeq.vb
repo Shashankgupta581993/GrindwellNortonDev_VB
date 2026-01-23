@@ -15,6 +15,9 @@ Public Class EventSeq
 
         Dim EventParameters = planningboard.NextEvent()
         Dim ResRec As Integer
+        Dim Qname As String
+        Dim ResIndex As Integer
+        Dim QNumber As Integer
 
         While EventParameters.HasValue
 
@@ -29,18 +32,17 @@ Public Class EventSeq
 
                     For ResRec = 1 To preactor.RecordCount("Resources")
 
-                        QName = planningboard.GetResourceQueueName(ResRec)
-                        ScheduleOperations(preactor, QName, ResRec,
+                        Qname = planningboard.GetResourceQueueName(ResRec)
+                        ScheduleOperations(preactor, Qname, ResRec,
                         EventParameters.Value.EventTime)
 
                     Next ResRec
-
                 Case EventTypes.QueueChange
                     ' Event Parameter 1 is the number of the queue that changed
                     ' check all resources which use this queue
                     ResIndex = 1
                     ResRec = 0
-                    QName = planningboard.GetQueueName(EventParameters.Value.Parameter1)
+                    Qname = planningboard.GetQueueName(EventParameters.Value.Parameter1)
                     While (planningboard.GetQueuesResource(QName, ResIndex, ResRec))
 
                         ScheduleOperations(preactor, QName, ResRec, EventParameters.Value.EventTime)
@@ -48,14 +50,15 @@ Public Class EventSeq
 
                     End While ' whilst there is another resource for this queue
                 Case EventTypes.ShiftChange
+
                     ' Event Parameter 2 is the Resource record that had a shift change
                     ' check the resource that had the shift change
                     QNumber = planningboard.GetResourceQueue(EventParameters.Value.Parameter2)
                     QName = planningboard.GetQueueName(QNumber)
+                    Q = planningboard.GetResourceQueue(ResRec)
 
                     ScheduleOperations(preactor, QName, EventParameters.Value.Parameter2,
                                        EventParameters.Value.EventTime)
-
                 Case EventTypes.UserEvent
 
                 Case Else
@@ -63,11 +66,6 @@ Public Class EventSeq
 
             EventParameters = planningboard.NextEvent()
         End While ' whilst there is another event
-
-
-
-
-
         Return 0
     End Function
 
@@ -79,8 +77,9 @@ Public Class EventSeq
         Dim CurrentRank As Integer = 1
         Dim OpRecord As Integer = 0
         Dim ResourceFree As Boolean = planningboard.IsResourceFree(ResRec, TestEventTime.AddDays(planningboard.SchedulingAccuracy))
-
+        Dim value = planningboard.GetOperationInQueue(QName, CurrentRank, OpRecord)
         While planningboard.GetOperationInQueue(QName, CurrentRank, OpRecord) AndAlso ResourceFree
+
             Dim TestOpResults = planningboard.TestOperationOnResource(OpRecord, ResRec, TestEventTime)
 
             If Not TestOpResults.HasValue Then
@@ -90,6 +89,7 @@ Public Class EventSeq
 
             If TestOpResults.Value.ChangeStart <= TestEventTime.AddDays(planningboard.SchedulingAccuracy) Then
                 planningboard.PutOperationOnResource(OpRecord, ResRec, TestOpResults.Value.ChangeStart)
+
             Else
                 ' if the operation cannot start now, check the next job in the queue
                 CurrentRank += 1

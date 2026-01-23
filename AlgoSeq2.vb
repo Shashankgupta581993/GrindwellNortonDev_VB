@@ -25,10 +25,6 @@ Public Class AlgoSeq2
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
-        Dim recNo As Integer = 0
-        Dim opTimes2 As Double 'Nullable(Of Preactor.OperationTimes)
-        Dim duration As TimeSpan
-
         'getMakeSpan(preactorComObject)
 
 
@@ -110,8 +106,13 @@ Public Class AlgoSeq2
         Dim reader As New CsvRoutingReader()
         Dim routingDt As DataTable = reader.ReadRoutingCsv()
         reader.AddExpectedFiringStartDate(routingDt)
-        reader.AddFiringWeekAndBatchColumns(routingDt, 0.8, 1)
+        reader.AddFiringWeekAndBatchColumns_V2_ByExpectedDateAndCycle(routingDt, 1, 0.2)
+        reader.AddPressingFields(routingDt)
         ExportDataTableToCsv(routingDt, "output1")
+        reader.CreatePressingBatches_PseudoSchedule(routingDt,
+                                                     10, 2, 2, "300", "Batch", "ExpectedFiringStartDate")
+        ExportDataTableToCsv(routingDt, "output2")
+
 
         ' Example: loop through rows
         For Each row As DataRow In routingDt.Rows
@@ -202,36 +203,6 @@ Public Class AlgoSeq2
 
         Return results
     End Function
-    ' Public Shared Sub ListAllClassificationStrings(preactor As IPreactor)
-
-    '    Try
-    '        Dim nFormats As Integer = preactor.FormatCount
-
-    '        For fmt As Integer = 1 To nFormats
-    '            Dim formatName As String = preactor.GetFormatName(fmt)
-    '            Dim nFields As Integer = preactor.FieldCount(fmt)
-
-    '            Debug.WriteLine($"--- Format {fmt}: {formatName} ({nFields} fields) ---")
-
-    '            For fld As Integer = 1 To nFields
-    '                Dim fieldName As String = preactor.GetFieldName(fmt, fld)
-    '                Dim classStr As String = preactor.ClassificationString(fmt, fld)
-
-
-    '                Debug.WriteLine(
-    '                    $"    Field {fld}: {fieldName}   Classification: {classStr}"
-    '                )
-    '            Next
-    '        Next
-
-    '        Debug.WriteLine("Classification string listing complete.")
-
-    '    Catch ex As Exception
-    '        Debug.WriteLine("Error listing classification strings: " & ex.Message)
-    '    End Try
-
-    'End Sub
-
 
     Public Function getMakeSpan(ByRef preactorComObject As PreactorObj) As Integer
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
@@ -380,6 +351,7 @@ Public Class AlgoSeq2
             Next
         End Using
     End Sub
+
 
 
 
