@@ -79,8 +79,8 @@
   <ItemGroup>
     <Compile Include="AlgoSeq.vb" />
     <Compile Include="AlgoSeq2.vb" />
+    <Compile Include="AlgoSeq3.vb" />
     <Compile Include="Class[newlogic].vb" />
-    <Compile Include="CustomAction1.vb" />
     <Compile Include="CustomAction[csv].vb" />
     <Compile Include="DBConnection.vb" />
     <Compile Include="EventSeq.vb" />
