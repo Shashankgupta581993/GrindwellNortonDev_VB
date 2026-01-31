@@ -104,6 +104,7 @@
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
     </Compile>
     <Compile Include="Preactor Extensions.vb" />
+    <Compile Include="SharedHelpers.vb" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="MyProject\Resources.resx">

@@ -63,20 +63,28 @@ Public Class firingOptimizer_vf
     Private ReadOnly MixB_Hi As String = "102VT"
     Private ReadOnly MixB_Lo As String = "65VT"
 
+    ' configurable delay (minutes) added to each batch start
+    Private _batchStartDelayMins As Integer = 0
+
     ' Entry point:
     ' dt: your schedule export (DataTable)
     ' kilnCsvPath: /mnt/data/kilndata.csv (or local path)
     ' startTime: "now" for kiln availability baseline
     ' minOcc/maxOcc: parameterized occupancy range
     ' allowUnderfilledTail: if True, only when no future readiness exists, allow final underfilled legal batches
+    ' batchStartDelayMins: additional minutes to add to every batch start (to avoid end/start contradiction)
     Public Function BuildBatchKilnPlan(dt As DataTable,
                                        kilnCsvPath As String,
                                        startTime As DateTime,
                                        minOcc As Double,
                                        maxOcc As Double,
-                                       Optional allowUnderfilledTail As Boolean = True) As FiringBatchPlan
+                                       Optional allowUnderfilledTail As Boolean = True,
+                                       Optional batchStartDelayMins As Integer = 0) As FiringBatchPlan
 
         ValidateInputs(dt, minOcc, maxOcc)
+
+        ' store configured delay for use by MakeBatchCandidate
+        _batchStartDelayMins = Math.Max(0, batchStartDelayMins)
 
         Dim kilnSupport As Dictionary(Of String, HashSet(Of String)) = ReadKilnBatchSupport(kilnCsvPath)
         If kilnSupport.Count = 0 Then Throw New ArgumentException("Kiln matrix has no usable Batch cycle support rows.")
@@ -409,6 +417,11 @@ Public Class firingOptimizer_vf
         Dim readyPlusLoad As DateTime = maxReady.AddMinutes(loadBuf)
         If readyPlusLoad > startT Then startT = readyPlusLoad
 
+        ' apply configured additional delay to batch start
+        If _batchStartDelayMins > 0 Then
+            startT = startT.AddMinutes(_batchStartDelayMins)
+        End If
+
         Dim govCycle As String = GetGoverningCycle(kind, cycles)
         Dim fireMins As Integer = GetGoverningFireMins(orders, govCycle)
         Dim endT As DateTime = startT.AddMinutes(fireMins)
@@ -732,45 +745,27 @@ Public Class firingOptimizer_vf
     ' ============================================================
 
     Private Function ParseDueAsEndOfDay(o As Object) As DateTime
-        Dim s As String = SafeStr(o).Trim()
-        If s = "" Then Return DateTime.MinValue
-
-        ' Your input is typically dd-mm-yyyy
-        Dim d As DateTime
-        If DateTime.TryParseExact(s,
-                                  "dd-MM-yyyy",
-                                  CultureInfo.InvariantCulture,
-                                  DateTimeStyles.None,
-                                  d) Then
-            Return d.Date.AddDays(1).AddTicks(-1) ' end of day
-        End If
-
-        ' fallback parse
-        If DateTime.TryParse(s, d) Then
-            Return d.Date.AddDays(1).AddTicks(-1)
-        End If
-
-        Return DateTime.MinValue
+        Return SharedHelpers.ParseDueAsEndOfDay(o)
     End Function
 
     Private Sub ValidateInputs(dt As DataTable, minOcc As Double, maxOcc As Double)
         If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
         If minOcc <= 0 OrElse maxOcc <= 0 OrElse minOcc > maxOcc Then Throw New ArgumentException("Invalid occupancy range.")
 
-        RequireColumn(dt, COL_ORDERNO)
-        RequireColumn(dt, COL_OPREC)
-        RequireColumn(dt, COL_OPNO)
-        RequireColumn(dt, COL_KILNTYPE)
-        RequireColumn(dt, COL_CYCLE)
-        RequireColumn(dt, COL_OCC)
-        RequireColumn(dt, COL_BATCHTIME)
-        RequireColumn(dt, COL_IS_SCHEDULED)
-        RequireColumn(dt, COL_SCHED_END)
-        RequireColumn(dt, COL_FIRING_DUE)
+        SharedHelpers.RequireColumn(dt, COL_ORDERNO)
+        SharedHelpers.RequireColumn(dt, COL_OPREC)
+        SharedHelpers.RequireColumn(dt, COL_OPNO)
+        SharedHelpers.RequireColumn(dt, COL_KILNTYPE)
+        SharedHelpers.RequireColumn(dt, COL_CYCLE)
+        SharedHelpers.RequireColumn(dt, COL_OCC)
+        SharedHelpers.RequireColumn(dt, COL_BATCHTIME)
+        SharedHelpers.RequireColumn(dt, COL_IS_SCHEDULED)
+        SharedHelpers.RequireColumn(dt, COL_SCHED_END)
+        SharedHelpers.RequireColumn(dt, COL_FIRING_DUE)
     End Sub
 
     Private Sub RequireColumn(dt As DataTable, name As String)
-        If Not dt.Columns.Contains(name) Then Throw New ArgumentException("Missing required column: " & name)
+        SharedHelpers.RequireColumn(dt, name)
     End Sub
 
     Private Function IsKnownCycle(c As String) As Boolean
@@ -778,51 +773,31 @@ Public Class firingOptimizer_vf
     End Function
 
     Private Function IsTruthy(s As String) As Boolean
-        If s Is Nothing Then Return False
-        Dim u As String = s.Trim().ToUpperInvariant()
-        Return u = "1" OrElse u = "TRUE" OrElse u = "T" OrElse u = "YES" OrElse u = "Y"
+        Return SharedHelpers.IsTruthy(s)
     End Function
 
     Private Function SafeArray(arr As String(), idx As Integer) As String
-        If arr Is Nothing Then Return ""
-        If idx < 0 OrElse idx >= arr.Length Then Return ""
-        Return If(arr(idx), "")
+        Return SharedHelpers.SafeArray(arr, idx)
     End Function
 
     Private Function SafeInt(o As Object) As Integer
-        If o Is Nothing Then Return 0
-        Dim v As Integer
-        If Integer.TryParse(o.ToString().Trim(), v) Then Return v
-        Return 0
+        Return SharedHelpers.SafeInt(o)
     End Function
 
     Private Function SafeDbl(o As Object) As Double
-        If o Is Nothing Then Return 0
-        Dim v As Double
-        If Double.TryParse(o.ToString().Trim(),
-                           NumberStyles.Any,
-                           CultureInfo.InvariantCulture,
-                           v) Then Return v
-        Return 0
+        Return SharedHelpers.SafeDbl(o)
     End Function
 
     Private Function SafeBool(o As Object) As Boolean
-        If o Is Nothing Then Return False
-        Dim s As String = o.ToString().Trim().ToUpperInvariant()
-        Return s = "TRUE" OrElse s = "T" OrElse s = "1" OrElse s = "YES" OrElse s = "Y"
+        Return SharedHelpers.SafeBool(o)
     End Function
 
     Private Function SafeDate(o As Object) As DateTime
-        If o Is Nothing Then Return DateTime.MinValue
-        If TypeOf o Is DateTime Then Return CType(o, DateTime)
-        Dim d As DateTime
-        If DateTime.TryParse(o.ToString(), d) Then Return d
-        Return DateTime.MinValue
+        Return SharedHelpers.SafeDate(o)
     End Function
 
     Private Function SafeStr(o As Object) As String
-        If o Is Nothing Then Return ""
-        Return o.ToString()
+        Return SharedHelpers.SafeStr(o)
     End Function
 
     ' ============================================================
@@ -897,9 +872,9 @@ Public Class firingOptimizer_vf
 
             For Each b As Integer In batchNos
 
-                Dim kiln As String = GetOrEmpty(plan.KilnByBatchNo, b)
-                Dim kind As String = GetOrEmpty(plan.BatchKindByBatchNo, b)
-                Dim gov As String = GetOrEmpty(plan.GoverningCycleByBatchNo, b)
+                Dim kiln As String = SharedHelpers.GetOrEmpty(plan.KilnByBatchNo, b)
+                Dim kind As String = SharedHelpers.GetOrEmpty(plan.BatchKindByBatchNo, b)
+                Dim gov As String = SharedHelpers.GetOrEmpty(plan.GoverningCycleByBatchNo, b)
 
                 Dim bs As DateTime = plan.BatchStartByBatchNo(b)
                 Dim be As DateTime = plan.BatchEndByBatchNo(b)
@@ -911,11 +886,11 @@ Public Class firingOptimizer_vf
                 ' For now we keep a placeholder "runningLate" that stays 0.
                 Dim row As String() = New String() {
                     b.ToString(CultureInfo.InvariantCulture),
-                    Csv(kiln),
-                    Csv(kind),
-                    Csv(gov),
-                    Csv(bs.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)),
-                    Csv(be.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)),
+                    SharedHelpers.Csv(kiln),
+                    SharedHelpers.Csv(kind),
+                    SharedHelpers.Csv(gov),
+                    SharedHelpers.Csv(SharedHelpers.FormatDateOrBlank(bs)),
+                    SharedHelpers.Csv(SharedHelpers.FormatDateOrBlank(be)),
                     numOrders.ToString(CultureInfo.InvariantCulture),
                     runningLate.ToString(CultureInfo.InvariantCulture)
                 }
@@ -942,11 +917,11 @@ Public Class firingOptimizer_vf
             For i As Integer = 0 To plan.QueueFiringOpRecs.Count - 1
 
                 Dim firingOpRec As Integer = plan.QueueFiringOpRecs(i)
-                Dim batchNo As Integer = GetOrDefault(plan.BatchNoByFiringOpRec, firingOpRec, -1)
+                Dim batchNo As Integer = SharedHelpers.GetOrDefault(plan.BatchNoByFiringOpRec, firingOpRec, -1)
 
-                Dim kiln As String = If(batchNo > 0, GetOrEmpty(plan.KilnByBatchNo, batchNo), "")
-                Dim kind As String = If(batchNo > 0, GetOrEmpty(plan.BatchKindByBatchNo, batchNo), "")
-                Dim gov As String = If(batchNo > 0, GetOrEmpty(plan.GoverningCycleByBatchNo, batchNo), "")
+                Dim kiln As String = If(batchNo > 0, SharedHelpers.GetOrEmpty(plan.KilnByBatchNo, batchNo), "")
+                Dim kind As String = If(batchNo > 0, SharedHelpers.GetOrEmpty(plan.BatchKindByBatchNo, batchNo), "")
+                Dim gov As String = If(batchNo > 0, SharedHelpers.GetOrEmpty(plan.GoverningCycleByBatchNo, batchNo), "")
 
                 Dim bs As DateTime = If(batchNo > 0 AndAlso plan.BatchStartByBatchNo.ContainsKey(batchNo), plan.BatchStartByBatchNo(batchNo), DateTime.MinValue)
                 Dim be As DateTime = If(batchNo > 0 AndAlso plan.BatchEndByBatchNo.ContainsKey(batchNo), plan.BatchEndByBatchNo(batchNo), DateTime.MinValue)
@@ -955,11 +930,8 @@ Public Class firingOptimizer_vf
                     (i + 1).ToString(CultureInfo.InvariantCulture),
                     firingOpRec.ToString(CultureInfo.InvariantCulture),
                     batchNo.ToString(CultureInfo.InvariantCulture),
-                    Csv(kiln),
-                    Csv(kind),
-                    Csv(gov),
-                    Csv(FormatDateOrBlank(bs)),
-                    Csv(FormatDateOrBlank(be))
+                    SharedHelpers.Csv(SharedHelpers.FormatDateOrBlank(bs)),
+                    SharedHelpers.Csv(SharedHelpers.FormatDateOrBlank(be))
                 }
 
                 w.WriteLine(String.Join(","c, row))
@@ -982,11 +954,11 @@ Public Class firingOptimizer_vf
             For i As Integer = 0 To plan.QueueFiringOpRecs.Count - 1
 
                 Dim firingOpRec As Integer = plan.QueueFiringOpRecs(i)
-                Dim batchNo As Integer = GetOrDefault(plan.BatchNoByFiringOpRec, firingOpRec, -1)
+                Dim batchNo As Integer = SharedHelpers.GetOrDefault(plan.BatchNoByFiringOpRec, firingOpRec, -1)
 
-                Dim kiln As String = If(batchNo > 0, GetOrEmpty(plan.KilnByBatchNo, batchNo), "")
-                Dim kind As String = If(batchNo > 0, GetOrEmpty(plan.BatchKindByBatchNo, batchNo), "")
-                Dim gov As String = If(batchNo > 0, GetOrEmpty(plan.GoverningCycleByBatchNo, batchNo), "")
+                Dim kiln As String = If(batchNo > 0, SharedHelpers.GetOrEmpty(plan.KilnByBatchNo, batchNo), "")
+                Dim kind As String = If(batchNo > 0, SharedHelpers.GetOrEmpty(plan.BatchKindByBatchNo, batchNo), "")
+                Dim gov As String = If(batchNo > 0, SharedHelpers.GetOrEmpty(plan.GoverningCycleByBatchNo, batchNo), "")
 
                 Dim bs As DateTime = If(batchNo > 0 AndAlso plan.BatchStartByBatchNo.ContainsKey(batchNo), plan.BatchStartByBatchNo(batchNo), DateTime.MinValue)
 
@@ -994,10 +966,10 @@ Public Class firingOptimizer_vf
                     (i + 1).ToString(CultureInfo.InvariantCulture),
                     firingOpRec.ToString(CultureInfo.InvariantCulture),
                     batchNo.ToString(CultureInfo.InvariantCulture),
-                    Csv(FormatDateOrBlank(bs)),
-                    Csv(kiln),
-                    Csv(kind),
-                    Csv(gov)
+                    SharedHelpers.Csv(SharedHelpers.FormatDateOrBlank(bs)),
+                    SharedHelpers.Csv(kiln),
+                    SharedHelpers.Csv(kind),
+                    SharedHelpers.Csv(gov)
                 }
 
                 w.WriteLine(String.Join(","c, row))
@@ -1016,40 +988,4 @@ Public Class firingOptimizer_vf
         Next
         Return count
     End Function
-
-    Private Function FormatDateOrBlank(d As DateTime) As String
-        If d = DateTime.MinValue Then Return ""
-        Return d.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
-    End Function
-
-    Private Function Csv(value As String) As String
-        If value Is Nothing Then value = ""
-        Dim mustQuote As Boolean = value.Contains(","c) OrElse value.Contains(""""c) OrElse value.Contains(ControlChars.Cr) OrElse value.Contains(ControlChars.Lf)
-        If value.Contains(""""c) Then value = value.Replace("""", """""")
-        If mustQuote Then Return """" & value & """"
-        Return value
-    End Function
-
-    Private Function GetOrEmpty(Of TKey)(dict As Dictionary(Of TKey, String), key As TKey) As String
-        If dict Is Nothing Then Return ""
-        Dim v As String = ""
-        If dict.TryGetValue(key, v) Then Return If(v, "")
-        Return ""
-    End Function
-
-    Private Function GetOrEmpty(Of TKey)(dict As Dictionary(Of TKey, DateTime), key As TKey) As String
-        If dict Is Nothing Then Return ""
-        Dim v As DateTime
-        If dict.TryGetValue(key, v) Then Return v.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
-        Return ""
-    End Function
-
-    Private Function GetOrDefault(Of TKey, TValue)(dict As Dictionary(Of TKey, TValue), key As TKey, defaultValue As TValue) As TValue
-        If dict Is Nothing Then Return defaultValue
-        Dim v As TValue = defaultValue
-        If dict.TryGetValue(key, v) Then Return v
-        Return defaultValue
-    End Function
-
-
 End Class
