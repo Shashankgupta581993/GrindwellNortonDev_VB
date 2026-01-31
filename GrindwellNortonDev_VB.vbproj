@@ -80,10 +80,12 @@
     <Compile Include="AlgoSeq.vb" />
     <Compile Include="AlgoSeq2.vb" />
     <Compile Include="AlgoSeq3.vb" />
+    <Compile Include="AlgoSeq4.vb" />
     <Compile Include="Class[newlogic].vb" />
     <Compile Include="CustomAction[csv].vb" />
     <Compile Include="DBConnection.vb" />
     <Compile Include="EventSeq.vb" />
+    <Compile Include="firingOptimizer_vf.vb" />
     <Compile Include="Helper.vb" />
     <Compile Include="Module[createtemplate].vb" />
     <Compile Include="MyProject\AssemblyInfo.vb" />
