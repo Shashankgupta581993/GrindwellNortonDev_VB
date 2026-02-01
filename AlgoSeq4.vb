@@ -72,8 +72,8 @@ Public Class AlgoSeq4
         End While
 
         ' Append schedule times from board for a few operation numbers (example)
-        routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 100)
-        routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 200)
+        '    routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 100)
+        ' routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 200)
 
         ' Build firing plan using firing optimizer (external class)
         Dim minOcc As Double = 0.8
@@ -86,7 +86,7 @@ Public Class AlgoSeq4
 
             ' 2) get batch metadata
             Dim batchNo As Integer = plan.BatchNoByFiringOpRec(firingOpRec)
-            Dim batchStart As DateTime = plan.BatchStartByBatchNo(batchNo).AddMinutes(60)
+            Dim batchStart As DateTime = plan.BatchStartByBatchNo(batchNo)
             Dim batchEnd As DateTime = plan.BatchEndByBatchNo(batchNo)
             Dim kilnName As String = plan.KilnByBatchNo(batchNo)
             Dim batchKind As String = plan.BatchKindByBatchNo(batchNo)
@@ -128,29 +128,25 @@ Public Class AlgoSeq4
             ' You can still validate kiln assignment here with TestOperationOnResource()
         Next
 
-        firingObj.ExportPlanToCsv(plan, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\")
-
-
-
         ' Export plan
         firingObj.ExportPlanToCsv(plan, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\")
-        Dim resrec As Integer = planningboard.GetResourceNumber("ULDBICK")
 
         Return 0
     End Function
 
-    ' ----------------------
-    ' Queue helpers
-    ' ----------------------
-    Private Function GetQueueSnapshot(ByVal planningboard As IPlanningBoard, ByVal queueName As String) As List(Of Integer)
-        Dim snapshot As New List(Of Integer)()
-        Dim pos As Integer = 1
-        Dim opRec As Integer = 0
-        While planningboard.GetOperationInQueue(queueName, pos, opRec)
-            snapshot.Add(opRec)
-            pos += 1
-        End While
-        Return snapshot
+    Public Function Run2(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+        'Dim dt As DataTable
+        'Dim filePath As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\Templates\Routing.csv"
+        'Dim routingDt As DataTable = ImportRoutingCsvToDataTable(filePath)
+        'dt = readOrderTable(preactor)
+
+        'Dim placeDate As New System.DateTime(2025, 8, 7, 0, 0, 0)
+        'planningboard.PutOperationOnResource(10, 5, placeDate)
+
+
+        Return 0
     End Function
 
     Private Function CreateRankedOperationQueue(ByRef preactor As IPreactor, ByVal planningboard As IPlanningBoard,
@@ -372,15 +368,15 @@ Public Class AlgoSeq4
         If Not dt.Columns.Contains(endColName) Then dt.Columns.Add(endColName, GetType(DateTime))
         If Not dt.Columns.Contains(schColName) Then dt.Columns.Add(schColName, GetType(Boolean))
 
-        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        Dim ordersTable As Integer = getformatfieldpair(preactor, format:="ORDERS").FormatNumber
         Dim opNoFields = preactor.FindClassificationString("OP NO")
         Dim ordersOpNoField As Preactor.FormatFieldPair = Nothing
         For Each f In opNoFields
             If f.FormatNumber = ordersTable Then ordersOpNoField = f
         Next
-        '        If ordersOpNoField Is Nothing Then Return dt
+        'If ordersOpNoField Is Nothing Then Return dt
 
-        Dim opCount As Integer = preactor.RecordCount(ordersOpNoField.FormatNumber)
+        Dim opCount As Integer = preactor.RecordCount(ordersTable)
 
         Dim idColumn As DataColumn = dt.Columns("OrdersID")
         dt.PrimaryKey = New DataColumn() {idColumn}
@@ -414,21 +410,6 @@ Public Class AlgoSeq4
         Return dt
     End Function
 
-    ' ----------------------
-    ' small helper to access format field pair(s)
-    ' ----------------------
-    Private Function getformatfieldpair(ByVal preactor As IPreactor, Optional ByVal field As String = "Field", Optional ByVal format As String = "Format") As Preactor.FormatFieldPair?
-        Dim ffp As Preactor.FormatFieldPair = Nothing
-        Select Case field.ToUpperInvariant()
-            Case "DUE DATE", "PRIORITY", "EARLIEST START DATE"
-                Return preactor.FindFirstClassificationString(field)
-            Case Else
-                If format = "ORDERS" Then
-                    Return preactor.FindFirstClassificationString("LAUNCH TIME")
-                End If
-        End Select
-        Return ffp
-    End Function
 
     ' ----------------------
     ' Candidate DTO

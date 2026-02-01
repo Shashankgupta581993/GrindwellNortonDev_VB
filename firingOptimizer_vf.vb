@@ -13,14 +13,6 @@ Imports Preactor.Interop.PreactorObject
 <ComVisible(True)> _
 <Microsoft.VisualBasic.ComClass("d409dd26-0bf6-4690-ba56-1e533e8a244b", "17657ef7-52b4-4301-879a-3f88e3967ba0")> _
 Public Class firingOptimizer_vf
-    'Public Function Run(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
-
-    '    Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
-
-    '    'TODO : Your code goes here
-
-    '    Return 0
-    'End Function
 
     Public Class FiringBatchPlan
         ' Queue of FIRING operation record numbers (your OrdersID for op 300 rows)
@@ -208,6 +200,7 @@ Public Class firingOptimizer_vf
 
             Dim opNo As Integer = SafeInt(r(COL_OPNO))
             If opNo <> 300 Then Continue For
+            If SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
 
             Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
             If orderNo = "" Then Continue For
@@ -764,41 +757,41 @@ Public Class firingOptimizer_vf
         SharedHelpers.RequireColumn(dt, COL_FIRING_DUE)
     End Sub
 
-    Private Sub RequireColumn(dt As DataTable, name As String)
-        SharedHelpers.RequireColumn(dt, name)
-    End Sub
+    'Private Sub RequireColumn(dt As DataTable, name As String)
+    '    SharedHelpers.RequireColumn(dt, name)
+    'End Sub
 
-    Private Function IsKnownCycle(c As String) As Boolean
+    Public Function IsKnownCycle(c As String) As Boolean
         Return c = "150VT" OrElse c = "102VT" OrElse c = "65VT"
     End Function
 
-    Private Function IsTruthy(s As String) As Boolean
-        Return SharedHelpers.IsTruthy(s)
-    End Function
+    'Private Function IsTruthy(s As String) As Boolean
+    '    Return SharedHelpers.IsTruthy(s)
+    'End Function
 
-    Private Function SafeArray(arr As String(), idx As Integer) As String
-        Return SharedHelpers.SafeArray(arr, idx)
-    End Function
+    'Private Function SafeArray(arr As String(), idx As Integer) As String
+    '    Return SharedHelpers.SafeArray(arr, idx)
+    'End Function
 
-    Private Function SafeInt(o As Object) As Integer
-        Return SharedHelpers.SafeInt(o)
-    End Function
+    'Private Function SafeInt(o As Object) As Integer
+    '    Return SharedHelpers.SafeInt(o)
+    'End Function
 
-    Private Function SafeDbl(o As Object) As Double
-        Return SharedHelpers.SafeDbl(o)
-    End Function
+    'Private Function SafeDbl(o As Object) As Double
+    '    Return SharedHelpers.SafeDbl(o)
+    'End Function
 
-    Private Function SafeBool(o As Object) As Boolean
-        Return SharedHelpers.SafeBool(o)
-    End Function
+    'Private Function SafeBool(o As Object) As Boolean
+    '    Return SharedHelpers.SafeBool(o)
+    'End Function
 
-    Private Function SafeDate(o As Object) As DateTime
-        Return SharedHelpers.SafeDate(o)
-    End Function
+    'Private Function SafeDate(o As Object) As DateTime
+    '    Return SharedHelpers.SafeDate(o)
+    'End Function
 
-    Private Function SafeStr(o As Object) As String
-        Return SharedHelpers.SafeStr(o)
-    End Function
+    'Private Function SafeStr(o As Object) As String
+    '    Return SharedHelpers.SafeStr(o)
+    'End Function
 
     ' ============================================================
     '  Internal classes

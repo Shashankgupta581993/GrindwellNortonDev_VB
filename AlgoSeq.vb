@@ -24,7 +24,8 @@ Public Class AlgoSeq
         opRec = 0
         CreateRankedParentQueue(preactor, planningboard, ordersTable, "JobsQueue")
 
-        ' --- DEBUG: snapshot the JobsQueue contents (operation record numbers) ---
+        ' ---
+        ' : snapshot the JobsQueue contents (operation record numbers) ---
         Dim jobsQueueSnapshot As List(Of Integer) = GetQueueSnapshot(planningboard, "JobsQueue")
 
         '------------------------------------------------------------
