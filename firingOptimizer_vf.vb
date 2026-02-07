@@ -196,7 +196,7 @@ Public Class firingOptimizer_vf
         For Each r As DataRow In dt.Rows
 
             Dim kilnType As String = SafeStr(r(COL_KILNTYPE)).Trim()
-            If Not kilnType.Equals("Batch", StringComparison.OrdinalIgnoreCase) Then Continue For
+            If Not kilnType.Equals("1", StringComparison.OrdinalIgnoreCase) Then Continue For '' this is where I made the klin type change
 
             Dim opNo As Integer = SafeInt(r(COL_OPNO))
             If opNo <> 300 Then Continue For

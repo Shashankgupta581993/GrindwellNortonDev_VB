@@ -176,7 +176,7 @@ Public Module SharedHelpers
             "Due Date", "Batch Time", "Process Time Type", "Tonnage", "Cycle Type", "Volume Occupancy",
             "Klin Type", "Firing buffer", "MTS/MTO", "MTS/MTO priority", "Que Time", "Pressing buffer",
             "Wheel Dia", "Wheel thickness", "Week start", "Pressing earliest start", "Pressing Due date",
-            "Constaint Usage", "Constraint Qty", "firing earliest start date", "firing due date", "scheduled_start_time", "scheduled_end_time", "is_scheduled"
+            "Constaint Usage", "Constraint Qty", "firing earliest start date", "firing due date", "scheduled_start_time", "scheduled_end_time", "is_scheduled", "parent_record"
         }
         For Each c In cols
             dt.Columns.Add(New DataColumn(c, GetType(Object)))
@@ -217,6 +217,7 @@ Public Module SharedHelpers
         Dim wheelPin = preactor.GetFieldNumber(ordersTable, "String Attribute 3")
         Dim schStart = preactor.GetFieldNumber(ordersTable, "Start Time")
         Dim schEnd = preactor.GetFieldNumber(ordersTable, "End Time")
+        'Dim parentRecord = preactor.GetFieldNumber(ordersTable, "Belongs to Order No.")
         Dim rowCount = preactor.RecordCount(ordersTable)
         For rec As Integer = 1 To rowCount
             Dim r As DataRow = dt.NewRow()
@@ -252,11 +253,17 @@ Public Module SharedHelpers
             'r("Constaint Usage") = preactor.ReadFieldInt(ordersTable, Qty, rec)
             'r("Constraint Qty") = preactor.ReadFieldInt(ordersTable, Qty, rec)
             'r("firing earliest start date") = preactor.ReadFieldInt(ordersTable, Qty, rec)
-            'r("firing due date") = preactor.ReadFieldInt(ordersTable, Qty, rec)
+            r("firing due date") = preactor.ReadFieldDateTime(ordersTable, presDue, rec).AddDays(8)
             If planningboard.IsOperationScheduled(rec) Then
                 r("scheduled_start_time") = preactor.ReadFieldDateTime(ordersTable, schStart, rec)
                 r("scheduled_end_time") = preactor.ReadFieldDateTime(ordersTable, schEnd, rec)
                 r("is_scheduled") = True
+            Else
+                r("is_scheduled") = False
+            End If
+            If rec > 1 Then
+                r("parent_record") = preactor.FindMatchingRecord(ordersTable, 1, rec, -1, SearchDirection.Backwards)
+            Else r("parent_record") = 1
             End If
             dt.Rows.Add(r)
         Next

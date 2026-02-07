@@ -84,10 +84,24 @@
     <Compile Include="AlgoSeq4.vb" />
     <Compile Include="Class[newlogic].vb" />
     <Compile Include="CustomAction[csv].vb" />
+    <Compile Include="DataViewExplorerForm.Designer.vb">
+      <DependentUpon>DataViewExplorerForm.vb</DependentUpon>
+    </Compile>
+    <Compile Include="DataViewExplorerForm.vb">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="DBConnection.vb" />
+    <Compile Include="DbSession.vb" />
     <Compile Include="EventSeq.vb" />
     <Compile Include="firingOptimizer_vf.vb" />
     <Compile Include="Helper.vb" />
+    <Compile Include="LoginForm.Designer.vb">
+      <DependentUpon>LoginForm.vb</DependentUpon>
+    </Compile>
+    <Compile Include="LoginForm.vb">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="MetadataExplorerRepository.vb" />
     <Compile Include="Module[createtemplate].vb" />
     <Compile Include="My Project\Settings.Designer.vb">
       <AutoGen>True</AutoGen>
@@ -113,6 +127,12 @@
     <Compile Include="SharedHelpers.vb" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="DataViewExplorerForm.resx">
+      <DependentUpon>DataViewExplorerForm.vb</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="LoginForm.resx">
+      <DependentUpon>LoginForm.vb</DependentUpon>
+    </EmbeddedResource>
     <EmbeddedResource Include="MyProject\Resources.resx">
       <Generator>VbMyResourcesResXFileCodeGenerator</Generator>
       <LastGenOutput>Resources.Designer.vb</LastGenOutput>
