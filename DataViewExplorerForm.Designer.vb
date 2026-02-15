@@ -26,11 +26,11 @@ Partial Class DataViewExplorerForm
         Me.dgvData = New System.Windows.Forms.DataGridView()
         Me.Panel1 = New System.Windows.Forms.Panel()
         Me.Panel2 = New System.Windows.Forms.Panel()
-        Me.btnSave = New System.Windows.Forms.Button()
-        Me.btnReload = New System.Windows.Forms.Button()
-        Me.btnDelete = New System.Windows.Forms.Button()
-        Me.btnApplyFilter = New System.Windows.Forms.Button()
         Me.txtFilter = New System.Windows.Forms.TextBox()
+        Me.btnApplyFilter = New System.Windows.Forms.Button()
+        Me.btnDelete = New System.Windows.Forms.Button()
+        Me.btnReload = New System.Windows.Forms.Button()
+        Me.btnSave = New System.Windows.Forms.Button()
         CType(Me.dgvData, System.ComponentModel.ISupportInitialize).BeginInit()
         Me.Panel1.SuspendLayout()
         Me.Panel2.SuspendLayout()
@@ -76,48 +76,48 @@ Partial Class DataViewExplorerForm
         Me.Panel2.Size = New System.Drawing.Size(1264, 87)
         Me.Panel2.TabIndex = 3
         '
-        'btnSave
+        'txtFilter
         '
-        Me.btnSave.Location = New System.Drawing.Point(882, 30)
-        Me.btnSave.Name = "btnSave"
-        Me.btnSave.Size = New System.Drawing.Size(75, 23)
-        Me.btnSave.TabIndex = 0
-        Me.btnSave.Text = "Save"
-        Me.btnSave.UseVisualStyleBackColor = True
-        '
-        'btnReload
-        '
-        Me.btnReload.Location = New System.Drawing.Point(740, 29)
-        Me.btnReload.Name = "btnReload"
-        Me.btnReload.Size = New System.Drawing.Size(75, 23)
-        Me.btnReload.TabIndex = 1
-        Me.btnReload.Text = "Reload"
-        Me.btnReload.UseVisualStyleBackColor = True
-        '
-        'btnDelete
-        '
-        Me.btnDelete.Location = New System.Drawing.Point(632, 28)
-        Me.btnDelete.Name = "btnDelete"
-        Me.btnDelete.Size = New System.Drawing.Size(75, 23)
-        Me.btnDelete.TabIndex = 2
-        Me.btnDelete.Text = "Delete"
-        Me.btnDelete.UseVisualStyleBackColor = True
+        Me.txtFilter.Location = New System.Drawing.Point(3, 66)
+        Me.txtFilter.Name = "txtFilter"
+        Me.txtFilter.Size = New System.Drawing.Size(220, 20)
+        Me.txtFilter.TabIndex = 4
         '
         'btnApplyFilter
         '
-        Me.btnApplyFilter.Location = New System.Drawing.Point(530, 28)
+        Me.btnApplyFilter.Location = New System.Drawing.Point(229, 64)
         Me.btnApplyFilter.Name = "btnApplyFilter"
         Me.btnApplyFilter.Size = New System.Drawing.Size(75, 23)
         Me.btnApplyFilter.TabIndex = 3
         Me.btnApplyFilter.Text = "Filter"
         Me.btnApplyFilter.UseVisualStyleBackColor = True
         '
-        'txtFilter
+        'btnDelete
         '
-        Me.txtFilter.Location = New System.Drawing.Point(424, 29)
-        Me.txtFilter.Name = "txtFilter"
-        Me.txtFilter.Size = New System.Drawing.Size(100, 20)
-        Me.txtFilter.TabIndex = 4
+        Me.btnDelete.Location = New System.Drawing.Point(1015, 64)
+        Me.btnDelete.Name = "btnDelete"
+        Me.btnDelete.Size = New System.Drawing.Size(75, 23)
+        Me.btnDelete.TabIndex = 2
+        Me.btnDelete.Text = "Delete"
+        Me.btnDelete.UseVisualStyleBackColor = True
+        '
+        'btnReload
+        '
+        Me.btnReload.Location = New System.Drawing.Point(1096, 64)
+        Me.btnReload.Name = "btnReload"
+        Me.btnReload.Size = New System.Drawing.Size(75, 23)
+        Me.btnReload.TabIndex = 1
+        Me.btnReload.Text = "Reload"
+        Me.btnReload.UseVisualStyleBackColor = True
+        '
+        'btnSave
+        '
+        Me.btnSave.Location = New System.Drawing.Point(1177, 64)
+        Me.btnSave.Name = "btnSave"
+        Me.btnSave.Size = New System.Drawing.Size(75, 23)
+        Me.btnSave.TabIndex = 0
+        Me.btnSave.Text = "Save"
+        Me.btnSave.UseVisualStyleBackColor = True
         '
         'DataViewExplorerForm
         '
@@ -128,7 +128,6 @@ Partial Class DataViewExplorerForm
         Me.Controls.Add(Me.Panel1)
         Me.Name = "DataViewExplorerForm"
         Me.Text = "DataViewExplorerForm"
-        Me.WindowState = System.Windows.Forms.FormWindowState.Maximized
         CType(Me.dgvData, System.ComponentModel.ISupportInitialize).EndInit()
         Me.Panel1.ResumeLayout(False)
         Me.Panel2.ResumeLayout(False)

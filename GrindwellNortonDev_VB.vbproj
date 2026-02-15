@@ -124,7 +124,9 @@
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
     </Compile>
     <Compile Include="Preactor Extensions.vb" />
+    <Compile Include="pressingOptimizer_vf.vb" />
     <Compile Include="SharedHelpers.vb" />
+    <Compile Include="tunnelOptimizer.vb" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="DataViewExplorerForm.resx">

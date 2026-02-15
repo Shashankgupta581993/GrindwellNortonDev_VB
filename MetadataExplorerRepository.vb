@@ -14,7 +14,7 @@ Public Class MetadataExplorerRepository
                 SELECT s.name AS SchemaName, t.name AS TableName
                 FROM sys.tables t
                 JOIN sys.schemas s ON t.schema_id = s.schema_id
-                WHERE t.is_ms_shipped = 0 AND s.name = 'sampledata'
+                WHERE t.is_ms_shipped = 0 AND s.name = 'metadata'
                 ORDER BY t.name;"
             Using da As New SqlDataAdapter(sql, cn)
                 Dim dt As New DataTable()

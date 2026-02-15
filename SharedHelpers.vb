@@ -176,7 +176,7 @@ Public Module SharedHelpers
             "Due Date", "Batch Time", "Process Time Type", "Tonnage", "Cycle Type", "Volume Occupancy",
             "Klin Type", "Firing buffer", "MTS/MTO", "MTS/MTO priority", "Que Time", "Pressing buffer",
             "Wheel Dia", "Wheel thickness", "Week start", "Pressing earliest start", "Pressing Due date",
-            "Constaint Usage", "Constraint Qty", "firing earliest start date", "firing due date", "scheduled_start_time", "scheduled_end_time", "is_scheduled", "parent_record"
+            "Constaint Usage", "Constraint Qty", "firing earliest start date", "firing due date", "scheduled_start_time", "scheduled_end_time", "is_scheduled", "parent_record", "prev_op_is_scheduled"
         }
         For Each c In cols
             dt.Columns.Add(New DataColumn(c, GetType(Object)))
@@ -265,10 +265,56 @@ Public Module SharedHelpers
                 r("parent_record") = preactor.FindMatchingRecord(ordersTable, 1, rec, -1, SearchDirection.Backwards)
             Else r("parent_record") = 1
             End If
-            dt.Rows.Add(r)
+            If rec > 1 Then
+                If planningboard.IsOperationScheduled(rec - 1) Then
+                    r("prev_op_is_scheduled") = True
+                End If
+            End If
+
+                dt.Rows.Add(r)
         Next
 
         Return dt
     End Function
+
+    ' Returns the end time of the last scheduled operation on a given resource.
+    ' If nothing is scheduled on that resource, returns Nothing (you can swap to ScheduleHorizon.Start, Now, etc.)
+
+    Public Function GetResourceLastScheduledEnd(
+                                               preactor As IPreactor,
+                                               planningboard As IPlanningBoard,
+                                               resourceRec As Integer) As Nullable(Of DateTime)
+
+        Dim ordersFmt As Integer = preactor.GetFormatNumber("Orders")
+
+        ' NOTE: field name depends on your dataset (commonly "Required Resource").
+        ' Use your PRTDF/field list for the exact name.
+        Dim reqResFieldNo As Integer = preactor.GetFieldNumber(ordersFmt, "Resource")
+
+        Dim lastEnd As Nullable(Of DateTime) = Nothing
+
+        For opRec As Integer = 1 To preactor.RecordCount(ordersFmt)
+
+            ' Filter: scheduled only
+            If Not planningboard.IsOperationScheduled(opRec) Then Continue For
+
+            ' Filter: operation belongs to this resource
+            Dim opResRec As Integer = preactor.ReadFieldInt(ordersFmt, reqResFieldNo, opRec)
+            If opResRec <> resourceRec Then Continue For
+
+            ' Get scheduled timing
+            Dim times As Nullable(Of Preactor.OperationResourceTimes) = planningboard.GetOperationTimes(opRec)
+            If Not times.HasValue Then Continue For
+
+            Dim opEnd As DateTime = times.Value.OperationTimes.ProcessEnd
+
+            If (Not lastEnd.HasValue) OrElse (opEnd > lastEnd.Value) Then
+                lastEnd = opEnd
+            End If
+        Next
+
+        Return lastEnd
+    End Function
+
 
 End Module
