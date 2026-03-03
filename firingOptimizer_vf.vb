@@ -44,6 +44,9 @@ Public Class firingOptimizer_vf
     Private Const COL_SCHED_END As String = "scheduled_end_time"
     Private Const COL_FIRING_DUE As String = "firing due date"
 
+    ' NEW: flag from routing export
+    Private Const COL_PREVOP_IS_SCH As String = "prev_op_is_scheduled"
+
     ' ----------------------------
     ' CYCLE PRIORITY & MIX RULES
     ' ----------------------------
@@ -66,12 +69,14 @@ Public Class firingOptimizer_vf
     ' allowUnderfilledTail: if True, only when no future readiness exists, allow final underfilled legal batches
     ' batchStartDelayMins: additional minutes to add to every batch start (to avoid end/start contradiction)
     Public Function BuildBatchKilnPlan(dt As DataTable,
-                                       kilnCsvPath As String,
-                                       startTime As DateTime,
-                                       minOcc As Double,
-                                       maxOcc As Double,
-                                       Optional allowUnderfilledTail As Boolean = True,
-                                       Optional batchStartDelayMins As Integer = 0) As FiringBatchPlan
+                                           kilnCsvPath As String,
+                                           startTime As DateTime,
+                                           minOcc As Double,
+                                           maxOcc As Double,
+                                           Optional allowUnderfilledTail As Boolean = True,
+                                           Optional batchStartDelayMins As Integer = 0,
+                                           Optional maxBatchesPerDayGlobal As Integer = 2) As FiringBatchPlan
+
 
         ValidateInputs(dt, minOcc, maxOcc)
 
@@ -98,6 +103,11 @@ Public Class firingOptimizer_vf
 
         Dim plan As New FiringBatchPlan()
         Dim batchNo As Integer = 0
+
+        ' NEW: global cap of batches per calendar day (across all kilns)
+        Dim globalDailyCap As Integer = If(maxBatchesPerDayGlobal <= 0, Integer.MaxValue, maxBatchesPerDayGlobal)
+        Dim batchCountByDay As New Dictionary(Of Date, Integer)()
+
 
         While unassigned.Count > 0
 
@@ -149,10 +159,47 @@ Public Class firingOptimizer_vf
             ' Primary: minimize late count in this batch
             ' Tie-breakers: prefer pure > mixed, then cycle priority, then higher occupancy, then more orders, then earlier start
             Dim best As BatchCandidate = ChooseBestCandidate(allCands)
+            If best Is Nothing Then Exit While
+
+            ' ---------------------------------------------------
+            ' NEW: Global max batches per calendar day (all kilns)
+            ' ---------------------------------------------------
+            Dim d As Date = best.BatchStart.Date
+
+            Dim countToday As Integer = 0
+            If batchCountByDay.ContainsKey(d) Then
+                countToday = batchCountByDay(d)
+            End If
+
+            If countToday >= globalDailyCap Then
+                ' This calendar day is "full" – push kiln availability to next day
+                Dim nextDayStart As DateTime = d.AddDays(1).Add(startTime.TimeOfDay)
+
+                Dim kilnKeys As New List(Of String)(kilnAvail.Keys)
+                For Each k In kilnKeys
+                    ' If a kiln is still available on/before this day, bump it to the next day start
+                    If kilnAvail(k).Date <= d Then
+                        kilnAvail(k) = nextDayStart
+                    End If
+                Next
+
+                ' Re-evaluate candidates with updated kilnAvail
+                Continue While
+            End If
 
             ' Commit batch
             batchNo += 1
+            batchCountByDay(d) = countToday + 1
             CommitBatch(plan, best, batchNo)
+
+            ' Update availability of the chosen kiln
+            kilnAvail(best.KilnName) = best.BatchEnd
+
+            ' Remove assigned orders from the pool
+            For Each o In best.Orders
+                unassigned.Remove(o.FiringOpRec)
+            Next
+
 
             ' Mark assigned + update kiln availability
             kilnAvail(best.KilnName) = best.BatchEnd
@@ -161,52 +208,197 @@ Public Class firingOptimizer_vf
             Next
         End While
 
-        plan.TotalBatches = plan.BatchStartByBatchNo.Count
+        plan.TotalBatches = batchNo
         Return plan
     End Function
+
+
+
 
     ' ============================================================
     '  Candidate building
     ' ============================================================
 
+    'Private Function BuildCandidates(dt As DataTable) As List(Of OrderCandidate)
+
+    '    Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+
+    '    ' readiness = max scheduled_end_time among scheduled ops with op < 290
+    '    For Each r As DataRow In dt.Rows
+    '        If Not SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
+    '        Dim opNo As Integer = SafeInt(r(COL_OPNO))
+    '        If opNo >= 290 Then Continue For
+
+    '        Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
+    '        If orderNo = "" Then Continue For
+
+    '        Dim endT As DateTime = SafeDate(r(COL_SCHED_END))
+    '        If endT = DateTime.MinValue Then Continue For
+
+    '        If Not readyByOrder.ContainsKey(orderNo) OrElse endT > readyByOrder(orderNo) Then
+    '            readyByOrder(orderNo) = endT
+    '        End If
+    '    Next
+
+    '    ' Does the export include prev_op_is_scheduled?
+    '    Dim hasPrevCol As Boolean = dt.Columns.Contains(COL_PREVOP_IS_SCH)
+
+    '    ' build per-order from op 300 row (firing)
+    '    Dim list As New List(Of OrderCandidate)()
+
+    '    For Each r As DataRow In dt.Rows
+
+    '        Dim kilnType As String = SafeStr(r(COL_KILNTYPE)).Trim()
+    '        If Not kilnType.Equals("1", StringComparison.OrdinalIgnoreCase) Then Continue For '' this is where I made the klin type change
+
+    '        Dim opNo As Integer = SafeInt(r(COL_OPNO))
+    '        If opNo <> 300 Then Continue For
+    '        If SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
+
+    '        Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
+    '        If orderNo = "" Then Continue For
+    '        If Not readyByOrder.ContainsKey(orderNo) Then Continue For
+
+    '        Dim cycle As String = SafeStr(r(COL_CYCLE)).Trim().ToUpperInvariant()
+    '        If Not IsKnownCycle(cycle) Then Continue For
+
+    '        Dim occ As Double = SafeDbl(r(COL_OCC))
+    '        If occ <= 0 Then Continue For
+
+    '        Dim fireMins As Integer = CInt(Math.Truncate(SafeDbl(r(COL_BATCHTIME))))
+    '        If fireMins <= 0 Then Continue For
+
+    '        Dim firingDue As DateTime = ParseDueAsEndOfDay(r(COL_FIRING_DUE))
+    '        If firingDue = DateTime.MinValue Then Continue For
+
+    '        ' loading time must come from 290/291 rows; we’ll collect it separately by scanning dt
+    '        Dim loadMins As Integer = FindMaxLoadingMins(dt, orderNo)
+    '        ' If missing, assume 0 (your current export has 0 everywhere). Logic still works.
+    '        If loadMins < 0 Then loadMins = 0
+
+    '        Dim firingOpRec As Integer = SafeInt(r(COL_OPREC))
+    '        If firingOpRec <= 0 Then Continue For
+
+    '        Dim ready As DateTime = readyByOrder(orderNo)
+
+    '        ' NEW: previous op scheduled flag (optional column)
+    '        Dim prevScheduled As Boolean = False
+    '        If hasPrevCol Then
+    '            Try
+    '                prevScheduled = SafeBool(r(COL_PREVOP_IS_SCH))
+    '            Catch ex As Exception
+    '                prevScheduled = False
+    '            End Try
+    '        End If
+
+    '        list.Add(New OrderCandidate With {
+    '            .OrderNo = orderNo,
+    '            .FiringOpRec = firingOpRec,
+    '            .CycleType = cycle,
+    '            .Occ = occ,
+    '            .ReadyTime = ready,
+    '            .DueTime = firingDue,
+    '            .FireMins = fireMins,
+    '            .LoadMins = loadMins,
+    '            .PrevOpIsScheduled = prevScheduled
+    '        })
+    '    Next
+
+    '    ' … rest of method unchanged (sort/return) …
+
+
+    '    Return list
+    'End Function
+
+    ' =====================================================================
+    ' BuildCandidates – now uses last pre-290 op as readiness
+    ' =====================================================================
     Private Function BuildCandidates(dt As DataTable) As List(Of OrderCandidate)
 
-        Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+        Dim list As New List(Of OrderCandidate)()
+        If dt Is Nothing OrElse dt.Rows.Count = 0 Then Return list
 
-        ' readiness = max scheduled_end_time among scheduled ops with op < 290
+        ' -----------------------------------------------------------------
+        ' STEP 1: For each order, find the last operation number BEFORE 290
+        '         (this is the "valid pre-firing op" for that order)
+        ' -----------------------------------------------------------------
+        Dim lastPreOpNoByOrder As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+
         For Each r As DataRow In dt.Rows
-            If Not SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
-            Dim opNo As Integer = SafeInt(r(COL_OPNO))
-            If opNo >= 290 Then Continue For
-
             Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
             If orderNo = "" Then Continue For
+
+            Dim opNo As Integer = SafeInt(r(COL_OPNO))
+            ' Last pre-firing op is the maximum opNo where 0 < opNo < 290
+            If opNo <= 0 OrElse opNo >= 290 Then Continue For
+
+            Dim current As Integer
+            If Not lastPreOpNoByOrder.TryGetValue(orderNo, current) OrElse opNo > current Then
+                lastPreOpNoByOrder(orderNo) = opNo
+            End If
+        Next
+
+        ' -----------------------------------------------------------------
+        ' STEP 2: For each order, get scheduled_end_time of that last pre-290 op
+        '         Only if that specific op is scheduled do we treat the order
+        '         as having a valid ReadyTime for firing.
+        ' -----------------------------------------------------------------
+        Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+
+        For Each r As DataRow In dt.Rows
+            Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
+            If orderNo = "" Then Continue For
+
+            Dim lastOpNo As Integer
+            If Not lastPreOpNoByOrder.TryGetValue(orderNo, lastOpNo) Then Continue For
+
+            Dim opNo As Integer = SafeInt(r(COL_OPNO))
+            If opNo <> lastOpNo Then Continue For
+
+            ' This is the "last pre-firing" op row for this order – it must be scheduled
+            If Not SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
 
             Dim endT As DateTime = SafeDate(r(COL_SCHED_END))
             If endT = DateTime.MinValue Then Continue For
 
-            If Not readyByOrder.ContainsKey(orderNo) OrElse endT > readyByOrder(orderNo) Then
+            ' One per order; if somehow multiple, keep the latest
+            Dim existing As DateTime = DateTime.MinValue
+            If readyByOrder.TryGetValue(orderNo, existing) Then
+                If endT > existing Then readyByOrder(orderNo) = endT
+            Else
                 readyByOrder(orderNo) = endT
             End If
         Next
 
-        ' build per-order from op 300 row (firing)
-        Dim list As New List(Of OrderCandidate)()
+        ' -----------------------------------------------------------------
+        ' STEP 3: Build firing candidates (op 300 on batch kilns) using
+        '         last pre-290 op completion as ReadyTime.
+        ' -----------------------------------------------------------------
+        Dim hasPrevCol As Boolean = dt.Columns.Contains(COL_PREVOP_IS_SCH)
 
         For Each r As DataRow In dt.Rows
 
-            Dim kilnType As String = SafeStr(r(COL_KILNTYPE)).Trim()
-            If Not kilnType.Equals("1", StringComparison.OrdinalIgnoreCase) Then Continue For '' this is where I made the klin type change
-
+            Dim kilnType As Integer = SafeInt(r(COL_KILNTYPE))
             Dim opNo As Integer = SafeInt(r(COL_OPNO))
-            If opNo <> 300 Then Continue For
-            If SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
+
+            ' Only firing op 300 on batch kilns
+            If kilnType <> 1 OrElse opNo <> 300 Then Continue For
+
+            ' Only unscheduled firing ops
+            Dim isScheduled As Boolean = SafeBool(r(COL_IS_SCHEDULED))
+            If isScheduled Then Continue For
 
             Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
             If orderNo = "" Then Continue For
-            If Not readyByOrder.ContainsKey(orderNo) Then Continue For
 
-            Dim cycle As String = SafeStr(r(COL_CYCLE)).Trim().ToUpperInvariant()
+            ' Require last pre-firing op to be scheduled → ReadyTime defined
+            Dim ready As DateTime
+            If Not readyByOrder.TryGetValue(orderNo, ready) Then
+                ' Sequence is incomplete – last pre-290 op not scheduled
+                Continue For
+            End If
+
+            Dim cycle As String = SafeStr(r(COL_CYCLE)).Trim()
             If Not IsKnownCycle(cycle) Then Continue For
 
             Dim occ As Double = SafeDbl(r(COL_OCC))
@@ -218,30 +410,39 @@ Public Class firingOptimizer_vf
             Dim firingDue As DateTime = ParseDueAsEndOfDay(r(COL_FIRING_DUE))
             If firingDue = DateTime.MinValue Then Continue For
 
-            ' loading time must come from 290/291 rows; we’ll collect it separately by scanning dt
             Dim loadMins As Integer = FindMaxLoadingMins(dt, orderNo)
-            ' If missing, assume 0 (your current export has 0 everywhere). Logic still works.
-            If loadMins < 0 Then loadMins = 0
+            If loadMins < 0 Then Continue For
 
             Dim firingOpRec As Integer = SafeInt(r(COL_OPREC))
             If firingOpRec <= 0 Then Continue For
 
-            Dim ready As DateTime = readyByOrder(orderNo)
+            ' WIP preference flag – still used for ranking / tie-breaking
+            Dim prevScheduled As Boolean = False
+            If hasPrevCol Then
+                Try
+                    prevScheduled = SafeBool(r(COL_PREVOP_IS_SCH))
+                Catch ex As Exception
+                    prevScheduled = False
+                End Try
+            End If
 
             list.Add(New OrderCandidate With {
-                .OrderNo = orderNo,
-                .FiringOpRec = firingOpRec,
-                .CycleType = cycle,
-                .Occ = occ,
-                .ReadyTime = ready,
-                .DueTime = firingDue,
-                .FireMins = fireMins,
-                .LoadMins = loadMins
-            })
+            .OrderNo = orderNo,
+            .FiringOpRec = firingOpRec,
+            .CycleType = cycle,
+            .Occ = occ,
+            .ReadyTime = ready,          ' <-- end of last pre-290 op
+            .DueTime = firingDue,
+            .FireMins = fireMins,
+            .LoadMins = loadMins,
+            .PrevOpIsScheduled = prevScheduled
+        })
         Next
 
         Return list
     End Function
+
+
 
     Private Function FindMaxLoadingMins(dt As DataTable, orderNo As String) As Integer
         Dim maxMins As Integer = -1
@@ -653,25 +854,47 @@ Public Class firingOptimizer_vf
 
     Private Function SortByDueThenOccThenReady(list As List(Of OrderCandidate)) As List(Of OrderCandidate)
         list.Sort(Function(a, b)
+                      ' 0) NEW – WIP reduction: prefer orders whose previous op is already scheduled
+                      If a.PrevOpIsScheduled <> b.PrevOpIsScheduled Then
+                          If a.PrevOpIsScheduled Then Return -1 Else Return 1
+                      End If
+
+                      ' 1) Earlier due date first
                       Dim c = a.DueTime.CompareTo(b.DueTime)
                       If c <> 0 Then Return c
+
+                      ' 2) Smaller occupancy first (packs more)
                       c = a.Occ.CompareTo(b.Occ)
                       If c <> 0 Then Return c
+
+                      ' 3) Earlier ready time
                       Return a.ReadyTime.CompareTo(b.ReadyTime)
                   End Function)
         Return list
     End Function
 
+
     Private Function SortByDueThenReadyThenOcc(list As List(Of OrderCandidate)) As List(Of OrderCandidate)
         list.Sort(Function(a, b)
+                      ' 0) NEW – WIP reduction: prefer orders whose previous op is already scheduled
+                      If a.PrevOpIsScheduled <> b.PrevOpIsScheduled Then
+                          If a.PrevOpIsScheduled Then Return -1 Else Return 1
+                      End If
+
+                      ' 1) Earlier due date first
                       Dim c = a.DueTime.CompareTo(b.DueTime)
                       If c <> 0 Then Return c
+
+                      ' 2) Earlier ready time
                       c = a.ReadyTime.CompareTo(b.ReadyTime)
                       If c <> 0 Then Return c
+
+                      ' 3) Smaller occupancy
                       Return a.Occ.CompareTo(b.Occ)
                   End Function)
         Return list
     End Function
+
 
     Private Function GetMaxReady(orders As List(Of OrderCandidate)) As DateTime
         Dim maxT As DateTime = DateTime.MinValue
@@ -738,8 +961,51 @@ Public Class firingOptimizer_vf
     ' ============================================================
 
     Private Function ParseDueAsEndOfDay(o As Object) As DateTime
-        Return SharedHelpers.ParseDueAsEndOfDay(o)
+        ' 1) Let existing helper try first (keeps backward compatibility)
+        Dim dt As DateTime = SharedHelpers.ParseDueAsEndOfDay(o)
+        If dt <> DateTime.MinValue Then
+            Return dt
+        End If
+
+        ' 2) Fallback: handle dd-MM-yyyy style strings like "15-06-2025 00:00:00"
+        If o Is Nothing OrElse TypeOf o Is DBNull Then
+            Return DateTime.MinValue
+        End If
+
+        Dim s As String = o.ToString().Trim()
+        If s = "" Then
+            Return DateTime.MinValue
+        End If
+
+        Dim parsed As DateTime
+
+        ' Try exact formats matching your export
+        Dim formats() As String = {
+        "dd-MM-yyyy HH:mm:ss",
+        "dd-MM-yyyy H:mm:ss",
+        "dd-MM-yyyy"
+    }
+
+        If DateTime.TryParseExact(s,
+                              formats,
+                              CultureInfo.InvariantCulture,
+                              DateTimeStyles.None,
+                              parsed) Then
+            ' If only date is present, you can choose to push to end-of-day.
+            ' If you prefer exact time as in the file, just "Return parsed" instead.
+            ' Here we keep it simple and return the parsed value as-is.
+            Return parsed
+        End If
+
+        ' 3) Last resort: let .NET try with current culture
+        If DateTime.TryParse(s, CultureInfo.CurrentCulture, DateTimeStyles.None, parsed) Then
+            Return parsed
+        End If
+
+        ' Still nothing → treat as invalid
+        Return DateTime.MinValue
     End Function
+
 
     Private Sub ValidateInputs(dt As DataTable, minOcc As Double, maxOcc As Double)
         If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
@@ -773,7 +1039,7 @@ Public Class firingOptimizer_vf
     '  Internal classes
     ' ============================================================
 
-    Private Class OrderCandidate
+    Class OrderCandidate
         Public Property OrderNo As String
         Public Property FiringOpRec As Integer
         Public Property CycleType As String
@@ -782,7 +1048,11 @@ Public Class firingOptimizer_vf
         Public Property DueTime As DateTime
         Public Property FireMins As Integer
         Public Property LoadMins As Integer
+
+        ' NEW: True if previous operation (e.g. pressing / drying) is already scheduled
+        Public Property PrevOpIsScheduled As Boolean
     End Class
+
 
     Private Class BatchCandidate
         Public Property BatchKind As String
@@ -957,4 +1227,269 @@ Public Class firingOptimizer_vf
         Next
         Return count
     End Function
+
+
+    ' =====================================================================
+    '  DEBUG: Export firing candidate filter analysis to CSV
+    ' =====================================================================
+    Public Sub ExportFiringCandidateDebug(dt As DataTable, debugFolderPath As String)
+
+        If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
+        If String.IsNullOrWhiteSpace(debugFolderPath) Then Throw New ArgumentException("debugFolderPath is empty.")
+
+        ' Ensure folder exists
+        If Not Directory.Exists(debugFolderPath) Then
+            Directory.CreateDirectory(debugFolderPath)
+        End If
+
+        ' Rebuild candidates using the same logic as BuildBatchKilnPlan
+        Dim candidates As List(Of OrderCandidate) = BuildCandidates(dt)
+
+        ' Write a detailed CSV explaining which rows became candidates, and why others did not
+        ExportCandidateFilterDebug(dt, candidates, debugFolderPath)
+    End Sub
+
+    ' =====================================================================
+    '  DEBUG: Export firing candidate filter analysis to CSV
+    '  - Aligned with BuildCandidates logic that uses:
+    '      * last pre-firing op = max(OpNo < 290)
+    '      * ReadyTime = scheduled_end_time of that op
+    '  - Shows for EACH row why it is:
+    '      IGNORED  (not op 300 batch kiln)
+    '      EXCLUDED (failed some filter)
+    '      CANDIDATE (included in BuildCandidates)
+    ' =====================================================================
+    Private Sub ExportCandidateFilterDebug(dt As DataTable,
+                                       candidates As List(Of OrderCandidate),
+                                       folderPath As String)
+
+        If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
+        If String.IsNullOrWhiteSpace(folderPath) Then Throw New ArgumentException("folderPath is empty.")
+
+        Dim filePath As String = Path.Combine(folderPath, "Firing_CandidateFilter_Debug.csv")
+
+        ' --------------------------------------------
+        ' 1) Fast lookup of candidates by OrdersID
+        ' --------------------------------------------
+        Dim candidateOpRecs As New HashSet(Of Integer)()
+        If candidates IsNot Nothing Then
+            For Each c In candidates
+                candidateOpRecs.Add(c.FiringOpRec)
+            Next
+        End If
+
+        ' --------------------------------------------
+        ' 2) Compute last pre-firing op and its end time
+        '    using the SAME logic as BuildCandidates
+        ' --------------------------------------------
+        Dim lastPreOpNoByOrder As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+        Dim lastPreEndByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+
+        ' Pass 1 – find last opNo < 290 per order
+        For Each r As DataRow In dt.Rows
+            Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
+            If orderNo = "" Then Continue For
+
+            Dim opNo As Integer = SafeInt(r(COL_OPNO))
+            If opNo <= 0 OrElse opNo >= 290 Then Continue For
+
+            Dim current As Integer
+            If Not lastPreOpNoByOrder.TryGetValue(orderNo, current) OrElse opNo > current Then
+                lastPreOpNoByOrder(orderNo) = opNo
+            End If
+        Next
+
+        ' Pass 2 – scheduled_end_time for that specific last op
+        For Each r As DataRow In dt.Rows
+            Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
+            If orderNo = "" Then Continue For
+
+            Dim lastOpNo As Integer
+            If Not lastPreOpNoByOrder.TryGetValue(orderNo, lastOpNo) Then Continue For
+
+            Dim opNo As Integer = SafeInt(r(COL_OPNO))
+            If opNo <> lastOpNo Then Continue For
+
+            If Not SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
+
+            Dim endT As DateTime = SafeDate(r(COL_SCHED_END))
+            If endT = DateTime.MinValue Then Continue For
+
+            Dim existing As DateTime = DateTime.MinValue
+            If lastPreEndByOrder.TryGetValue(orderNo, existing) Then
+                If endT > existing Then lastPreEndByOrder(orderNo) = endT
+            Else
+                lastPreEndByOrder(orderNo) = endT
+            End If
+        Next
+
+        ' prev_op_is_scheduled is optional, so don't assume the constant exists
+        Dim hasPrevCol As Boolean = dt.Columns.Contains("prev_op_is_scheduled")
+
+        Using w As New StreamWriter(filePath, append:=False, encoding:=New UTF8Encoding(encoderShouldEmitUTF8Identifier:=False))
+
+            ' --------------------------------------------
+            ' Header
+            ' --------------------------------------------
+            w.WriteLine(String.Join(","c, New String() {
+            "OrderNo",
+            "OrdersID",
+            "OpNo",
+            "KilnType",
+            "CycleType",
+            "Occ",
+            "BatchTimeMins",
+            "LoadMins",
+            "IsScheduled",
+            "PrevOpIsScheduled",
+            "LastPreOpNo",
+            "LastPreOpScheduled",
+            "LastPreOpEndTime",
+            "FiringDueRaw",
+            "FiringDueParsed",
+            "InCandidateList",
+            "Status",
+            "Reason"
+        }))
+
+            ' --------------------------------------------
+            ' Row-by-row analysis
+            ' --------------------------------------------
+            For Each r As DataRow In dt.Rows
+
+                Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
+                Dim opNo As Integer = SafeInt(r(COL_OPNO))
+                Dim kilnType As Integer = SafeInt(r(COL_KILNTYPE))
+                Dim cycle As String = SafeStr(r(COL_CYCLE)).Trim()
+                Dim occ As Double = SafeDbl(r(COL_OCC))
+                Dim fireMins As Integer = CInt(Math.Truncate(SafeDbl(r(COL_BATCHTIME))))
+                Dim firingOpRec As Integer = SafeInt(r(COL_OPREC))
+                Dim isScheduled As Boolean = SafeBool(r(COL_IS_SCHEDULED))
+
+                ' Optional prev_op_is_scheduled flag
+                Dim prevScheduled As Boolean = False
+                If hasPrevCol Then
+                    Try
+                        prevScheduled = SafeBool(r("prev_op_is_scheduled"))
+                    Catch ex As Exception
+                        prevScheduled = False
+                    End Try
+                End If
+
+                ' Last pre-firing op info (aligned with BuildCandidates)
+                Dim lastPreOpNo As Integer = 0
+                Dim lastPreScheduled As Boolean = False
+                Dim lastPreEnd As DateTime = DateTime.MinValue
+
+                If orderNo <> "" AndAlso lastPreOpNoByOrder.TryGetValue(orderNo, lastPreOpNo) Then
+                    If lastPreEndByOrder.TryGetValue(orderNo, lastPreEnd) Then
+                        lastPreScheduled = True
+                    End If
+                End If
+
+                ' Firing due date raw + parsed (using same parser as BuildCandidates)
+                Dim firingDueRaw As Object = r(COL_FIRING_DUE)
+                Dim firingDue As DateTime = ParseDueAsEndOfDay(firingDueRaw)
+                Dim firingDueRawStr As String = If(firingDueRaw Is Nothing, "", firingDueRaw.ToString())
+                Dim firingDueParsedStr As String = SharedHelpers.FormatDateOrBlank(firingDue)
+
+                ' Loading mins from 290/291
+                Dim loadMins As Integer = 0
+                If orderNo <> "" Then
+                    loadMins = FindMaxLoadingMins(dt, orderNo)
+                End If
+
+                ' Was this firing row present in BuildCandidates output?
+                Dim inList As Boolean = candidateOpRecs.Contains(firingOpRec)
+
+                ' ----------------------------------------
+                ' Status & Reason logic (per firing row)
+                ' ----------------------------------------
+                Dim status As String = ""
+                Dim reason As String = ""
+
+                If kilnType <> 1 OrElse opNo <> 300 Then
+                    status = "IGNORED"
+                    reason = "Not batch-kiln op 300 (KilnType=" & kilnType.ToString() & ", OpNo=" & opNo.ToString() & ")"
+
+                ElseIf isScheduled Then
+                    status = "EXCLUDED"
+                    reason = "Already scheduled (is_scheduled = True)"
+
+                ElseIf orderNo = "" Then
+                    status = "EXCLUDED"
+                    reason = "Missing Order No"
+
+                ElseIf lastPreOpNo = 0 Then
+                    status = "EXCLUDED"
+                    reason = "No pre-firing op < 290 found in routing for this order"
+
+                ElseIf Not lastPreScheduled Then
+                    status = "EXCLUDED"
+                    reason = "Last pre-firing op " & lastPreOpNo.ToString() & " is not scheduled (sequence incomplete)"
+
+                ElseIf Not IsKnownCycle(cycle) Then
+                    status = "EXCLUDED"
+                    reason = "Unknown cycle type '" & cycle & "'"
+
+                ElseIf occ <= 0 Then
+                    status = "EXCLUDED"
+                    reason = "Volume Occupancy <= 0"
+
+                ElseIf fireMins <= 0 Then
+                    status = "EXCLUDED"
+                    reason = "Batch Time <= 0"
+
+                ElseIf firingDue = DateTime.MinValue Then
+                    status = "EXCLUDED"
+                    reason = "Invalid / missing firing due date"
+
+                ElseIf firingOpRec <= 0 Then
+                    status = "EXCLUDED"
+                    reason = "Invalid OrdersID for op 300"
+
+                Else
+                    ' Passed all the same filters BuildCandidates uses
+                    If inList Then
+                        status = "CANDIDATE"
+                        reason = "Included by BuildCandidates"
+                    Else
+                        status = "EXCLUDED"
+                        reason = "Passed filters but not present in BuildCandidates result (duplicate OrdersID or other subtle check)."
+                    End If
+                End If
+
+                Dim lastPreEndStr As String = SharedHelpers.FormatDateOrBlank(lastPreEnd)
+
+                ' ----------------------------------------
+                ' Write CSV row
+                ' ----------------------------------------
+                Dim row As String() = New String() {
+                SharedHelpers.Csv(orderNo),
+                firingOpRec.ToString(CultureInfo.InvariantCulture),
+                opNo.ToString(CultureInfo.InvariantCulture),
+                kilnType.ToString(CultureInfo.InvariantCulture),
+                SharedHelpers.Csv(cycle),
+                occ.ToString(CultureInfo.InvariantCulture),
+                fireMins.ToString(CultureInfo.InvariantCulture),
+                loadMins.ToString(CultureInfo.InvariantCulture),
+                If(isScheduled, "1", "0"),
+                If(prevScheduled, "1", "0"),
+                lastPreOpNo.ToString(CultureInfo.InvariantCulture),
+                If(lastPreScheduled, "1", "0"),
+                SharedHelpers.Csv(lastPreEndStr),
+                SharedHelpers.Csv(firingDueRawStr),
+                SharedHelpers.Csv(firingDueParsedStr),
+                If(inList, "1", "0"),
+                SharedHelpers.Csv(status),
+                SharedHelpers.Csv(reason)
+            }
+
+                w.WriteLine(String.Join(","c, row))
+            Next
+        End Using
+
+    End Sub
+
+
 End Class

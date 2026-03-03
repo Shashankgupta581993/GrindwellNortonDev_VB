@@ -1,4 +1,4 @@
-Option Strict On
+﻿Option Strict On
 Option Explicit On
 
 Imports System
@@ -124,6 +124,8 @@ Public Module SharedHelpers
         Return DateTime.MinValue
     End Function
 
+
+
     ' ----------------------
     ' Queue helpers
     ' ----------------------
@@ -211,6 +213,7 @@ Public Module SharedHelpers
         Dim volumeOcc = preactor.GetFieldNumber(ordersTable, "Numerical Attribute 5")
         Dim presEarlyStart = preactor.GetFieldNumber(ordersTable, "Date Attribute 1")
         Dim presDue = preactor.GetFieldNumber(ordersTable, "Date Attribute 2")
+        Dim firingDue = preactor.GetFieldNumber(ordersTable, "Date Attribute 3")
         Dim mts = preactor.GetFieldNumber(ordersTable, "Table Attribute 1")
         Dim wheelDia = preactor.GetFieldNumber(ordersTable, "String Attribute 5")
         Dim wheelThck = preactor.GetFieldNumber(ordersTable, "String Attribute 4")
@@ -253,7 +256,7 @@ Public Module SharedHelpers
             'r("Constaint Usage") = preactor.ReadFieldInt(ordersTable, Qty, rec)
             'r("Constraint Qty") = preactor.ReadFieldInt(ordersTable, Qty, rec)
             'r("firing earliest start date") = preactor.ReadFieldInt(ordersTable, Qty, rec)
-            r("firing due date") = preactor.ReadFieldDateTime(ordersTable, presDue, rec).AddDays(8)
+            r("firing due date") = preactor.ReadFieldDateTime(ordersTable, firingDue, rec)
             If planningboard.IsOperationScheduled(rec) Then
                 r("scheduled_start_time") = preactor.ReadFieldDateTime(ordersTable, schStart, rec)
                 r("scheduled_end_time") = preactor.ReadFieldDateTime(ordersTable, schEnd, rec)
@@ -266,12 +269,16 @@ Public Module SharedHelpers
             Else r("parent_record") = 1
             End If
             If rec > 1 Then
-                If planningboard.IsOperationScheduled(rec - 1) Then
-                    r("prev_op_is_scheduled") = True
+                If preactor.ReadFieldInt(ordersTable, opNo, rec) = 300 Then
+                    If planningboard.IsOperationScheduled(rec - 1) Then
+                        r("prev_op_is_scheduled") = True
+                    ElseIf planningboard.IsOperationScheduled(rec - 2) Then
+                        r("prev_op_is_scheduled") = True
+                    End If
                 End If
             End If
 
-                dt.Rows.Add(r)
+            dt.Rows.Add(r)
         Next
 
         Return dt
@@ -316,5 +323,12 @@ Public Module SharedHelpers
         Return lastEnd
     End Function
 
-
+    ' Minimal CSV escape: wrap in quotes if it contains comma or quote; double quotes inside.
+    Public Function CsvEscape(value As String) As String
+        If value Is Nothing Then Return ""
+        Dim mustQuote = value.Contains(",") OrElse value.Contains("""") OrElse value.Contains(vbCr) OrElse value.Contains(vbLf)
+        If value.Contains("""") Then value = value.Replace("""", """""")
+        If mustQuote Then Return $"""{value}"""
+        Return value
+    End Function
 End Module

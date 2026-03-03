@@ -31,13 +31,6 @@ Public Class AlgoSeq4
 
 
         'Append schedule times from board for a few operation numbers (example)
-        'routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 100)
-        'routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 200)
-        'routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 250)
-        'routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 260)
-        'routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 270)
-        'routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 290)
-        'routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 291)
 
         Dim AKLN As Integer = planningboard.GetResourceNumber("AKLN")
         Dim BKLN As Integer = planningboard.GetResourceNumber("BKLN")
@@ -48,11 +41,27 @@ Public Class AlgoSeq4
         Dim LOADBICK As Integer = planningboard.GetResourceNumber("LOADBICK")
 
 
+
         ' Build firing plan using firing optimizer (external class)
         Dim minOcc As Double = 0.8
         Dim maxOcc As Double = 1.0
-        Dim firingObj As New firingOptimizer_vf
-        Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc, batchStartDelayMins:=60)
+        'Dim firingObj As New firingOptimizer_vf
+        'Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc, batchStartDelayMins:=60)
+        Dim debugFolder As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\Debug\Firing_" &
+                            DateTime.Now.ToString("yyyyMMdd_HHmmss")
+
+        Dim firingObj As New firingOptimizer_vf()
+        firingObj.ExportFiringCandidateDebug(routingDt, debugFolder)
+
+        ' Then call your normal BuildBatchKilnPlan + ExportPlanToCsv as before
+        Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc,
+                                        allowUnderfilledTail:=True,
+                                        batchStartDelayMins:=60,
+                                        maxBatchesPerDayGlobal:=2)
+
+        ' Debugger
+        firingObj.ExportPlanToCsv(plan, debugFolder)
+
 
         ' 1) iterate firing queue (these are op 300 record numbers)
         For Each firingOpRec As Integer In plan.QueueFiringOpRecs
@@ -93,8 +102,6 @@ Public Class AlgoSeq4
             End Select
         Next
 
-        ' Export plan
-        firingObj.ExportPlanToCsv(plan, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\")
 
         preactor.DestroyStatus()
 
@@ -149,6 +156,55 @@ Public Class AlgoSeq4
         Return 0
     End Function
 
+    Public Function runFix(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+
+        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
+        Dim routingDt As DataTable = readOrderTable(preactor)
+        Dim currentDate As DateTime = planningboard.TerminatorTime
+        Dim DRYER As Integer = planningboard.GetResourceNumber("DRYER")
+        Dim times As OperationTimes?
+
+
+
+        ' where ever the start time of op 290 is > that terminator time
+        ' find start time of op 290 for every eligible order
+        ' find the dryer operation (rec-2)
+        ' testoperationbackward from start time of op 290 -> start time of dryer
+        ' putoperation on resource at the testoperation.process start
+
+        Dim reccount = preactor.RecordCount(ordersTable)
+        Dim recOpNo As Integer
+        Dim nxtrecOpNo As Integer
+        For i As Integer = 1 To reccount
+            recOpNo = preactor.ReadFieldInt(ordersTable, opNoField, i)
+            'for DRYER fix
+            If recOpNo <> 260 Then Continue For
+            nxtrecOpNo = preactor.ReadFieldInt(ordersTable, opNoField, planningboard.GetNextOperation(i, 1))
+            If nxtrecOpNo <> 290 Then Continue For
+            If planningboard.GetOperationTimes(i + 1).Value.OperationTimes.ProcessStart < currentDate Then Continue For
+            times = planningboard.BackTestOpOnResource(i, DRYER, planningboard.GetOperationTimes(i + 1).Value.OperationTimes.ProcessStart)
+            planningboard.PutOperationOnResource(i, DRYER, times.Value.ProcessStart)
+        Next
+
+        Dim times2 As DateTime
+        Dim oprec As Integer = 1
+        For i As Integer = 1 To reccount
+            If preactor.ReadFieldInt(ordersTable, opNoField, i) <> 200 Then Continue For
+            oprec = planningboard.GetPreviousOperation(i, 1)
+            times2 = planningboard.GetOperationTimes(i).Value.OperationTimes.ProcessStart
+            If times2 < currentDate Then Continue For
+            While (oprec > 0)
+                planningboard.PutOperationOnResource(oprec, 1, times2.AddDays(-1))
+                oprec = planningboard.GetPreviousOperation(oprec, 1)
+            End While
+        Next
+
+        Return 0
+    End Function
+
 
     Public Function showMeta(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
@@ -156,7 +212,20 @@ Public Class AlgoSeq4
 
         Dim times As Preactor.CalendarState? = planningboard.GetCurrentCalendarState(planningboard.GetResourceNumber("PL06001A"), planningboard.TerminatorTime)
 
+        preactor.CreateRecord(114)
+        Dim lastRec As Integer = preactor.RecordCount(114)
+        preactor.WriteField(114, "Order No.", lastRec, "Aggregate Record 1")
+        preactor.WriteField(114, "Aggregate Record", lastRec, True)
+        Dim x As Integer = 1
+        preactor.SetAutoListSize("Orders", "Members", lastRec, 1)
+        preactor.WriteMatrixField("Orders", "Members", lastRec, 1, 1, 1)
 
+
+
+        'preactor.WriteMatrixField(114, "Members", lastRec, )
+        'preactor.WriteListField(formatNumber:=114, fieldName:="Members", record:=lastRec, value:="120810087 - 300 (FIRING/BAKING, Bickley Batch Kilns)", x:=0)
+        '120810087 - 300 (FIRING/BAKING, Bickley Batch Kilns)
+        '120810087 - 300 (FIRING/BAKING, Bickley Batch Kilns)
         'Try
         '    ' ... your normal rule setup here ...
 
@@ -170,7 +239,14 @@ Public Class AlgoSeq4
         preactor.Redraw()
         Return 0
     End Function
+    Public Function Test(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
+
+
+        Return 0
+    End Function
 
     Public Function untilPress(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
@@ -181,6 +257,7 @@ Public Class AlgoSeq4
         Dim ResRecs As IEnumerable(Of Integer)
         Dim opTimes As Nullable(Of Preactor.OperationTimes)
         Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
         'Dim currentDate As New System.DateTime(2025, 8, 1, 0, 0, 0)
         Dim currentDate As DateTime = planningboard.TerminatorTime
         routingdt = readOrderTable(preactor)
@@ -197,7 +274,7 @@ Public Class AlgoSeq4
             ' Inner loop: schedule this operation and then walk to subsequent operations
             ' (your "family" / routing chain) using GetNextOperation.
             While (opRec > 0)
-                If preactor.ReadFieldInt(114, 57, opRec) >= 200 Then Exit While
+                If preactor.ReadFieldInt(ordersTable, opNoField, opRec) >= 200 Then Exit While
                 ' Find all valid alternate resources for this operation.
                 ResRecs = planningboard.FindResources(opRec)
 
@@ -234,7 +311,8 @@ Public Class AlgoSeq4
                 ' After scanning all alternates:
                 If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
                     ' Load the operation onto the resource that gives the earliest feasible start.
-                    planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart.AddDays(0))
+                    ' planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
+                    planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ProcessStart.AddDays(-1))
                 Else
                     ' No feasible resource was found.
                     ' Practical meaning:
@@ -357,7 +435,7 @@ Public Class AlgoSeq4
         Dim pressingObj As New pressingOptimizer_vf()
         Dim pressingQueue = pressingObj.BuildPressing200Queue(routingdt, currentDate, prioritizePrevOpFirst:=True)
         CreateRankedOperationQueue(preactor, planningboard, ordersTable, "JobsQueue", pressingQueue)
-
+        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
 
         ' Snapshot for debugging
         Dim jobsQueueSnapshot As List(Of Integer) = GetQueueSnapshot(planningboard, "JobsQueue")
@@ -370,8 +448,8 @@ Public Class AlgoSeq4
             ' Inner loop: schedule this operation and then walk to subsequent operations
             ' (your "family" / routing chain) using GetNextOperation.
             While (opRec > 0) ' this condition is wrong
-                If preactor.ReadFieldInt(114, 57, opRec) > 200 Then Exit While
-                If preactor.ReadFieldInt(114, 57, opRec) = 200 Then
+                If preactor.ReadFieldInt(ordersTable, opNoField, opRec) > 200 Then Exit While
+                If preactor.ReadFieldInt(ordersTable, opNoField, opRec) = 200 Then
                     ' Find all valid alternate resources for this operation.
                     ResRecs = planningboard.FindResources(opRec)
 
@@ -438,7 +516,7 @@ Public Class AlgoSeq4
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
         Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
-
+        Dim opNofield As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
         ' Example: import a CSV, build pressing queue, create ranked queue and schedule
         'Dim filePath As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\Templates\Routing.csv"
         'Dim routingDt As DataTable = ImportRoutingCsvToDataTable(filePath)
@@ -479,7 +557,7 @@ Public Class AlgoSeq4
         ' Inner loop: schedule this operation and then walk to subsequent operations
         ' (your "family" / routing chain) using GetNextOperation.
         While (opRec > 0 And opRec < reccount)
-            If preactor.ReadFieldInt(114, 57, opRec) > 200 And preactor.ReadFieldInt(114, 57, opRec) < 290 Then
+            If preactor.ReadFieldInt(ordersTable, opNofield, opRec) > 200 And preactor.ReadFieldInt(ordersTable, opNofield, opRec) < 290 Then
                 ' Find all valid alternate resources for this operation.
                 ResRecs = planningboard.FindResources(opRec)
 
@@ -522,9 +600,9 @@ Public Class AlgoSeq4
                         '    planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart.Date.AddDays(1))
                     ElseIf bestResRec = DRYER Then
                         Dim i As DateTime
-                        Dim batchTime As Double = preactor.ReadFieldDouble(114, 108, opRec + 2)
+                        Dim batchTime As Double = preactor.ReadFieldDouble(ordersTable, 108, opRec + 2)
                         i = bestOpTimes.Value.ChangeStart.AddDays(batchTime + 1)
-                        If i > preactor.ReadFieldDateTime(114, 46, opRec) Then
+                        If i > preactor.ReadFieldDateTime(ordersTable, 46, opRec) Then
                             planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
                         Else
                             planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
