@@ -2,82 +2,443 @@
 Option Explicit On
 
 Imports System
-Imports System.Diagnostics.Eventing
 Imports System.Globalization
 Imports System.IO
-Imports System.Reflection
 Imports System.Runtime.InteropServices
-Imports System.Text
+Imports System.Threading
 Imports Microsoft.VisualBasic.FileIO
 Imports Preactor
 Imports Preactor.Interop.PreactorObject
+Imports System.Windows.Forms
 
 <ComVisible(True)>
 <Microsoft.VisualBasic.ComClass("4196dd4d-4e89-45a5-9ca5-4fc6dcf10308", "ef5b2382-ab81-47a5-9c8d-0826dcc85a0a")>
 Public Class AlgoSeq4
-    '========================
-    ' USER-TUNABLE CONSTANTS
-    '========================
-    Private Const PRESS_OP_NUMBER As Integer = 200
-
-    ' IMPORTANT:
-    ' Mixing op number is not provided in this thread.
-    ' Set this to your actual mixing operation number (the one you manually schedule).
-    Private Const MIX_OP_NUMBER As Integer = 0 ' TODO: set (e.g., 100)
-
-    Private Const QUEUE_NAME As String = "Pressing200Queue"
-
-    ' Cycle priority: higher first (150VT > 102VT > 65VT). Add others as needed.
-    Private Shared ReadOnly CyclePriority As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase) From {
-        {"150VT", 3},
-        {"102VT", 2},
-        {"65VT", 1}
-    }
-
-    '========================
-    ' FORMAT FIELD PAIRS (FFP)
-    ' Keep all table/field naming here only.
-    '========================
-    ' TODO: Replace these strings with your actual FormatFieldPair tokens.
-    ' If your environment uses different tokens, change them here only.
-    Private Const FFP_OP_NUMBER As String = "Operations.Operation Number"
-    Private Const FFP_OP_IS_SCHEDULED_CHECK As String = "" ' Not used; we use PlanningBoard times instead.
-
-    Private Const FFP_OP_PARENT_ORDER_REC As String = "Operations.Order"        ' TODO
-    Private Const FFP_ORDER_PRESS_DUE_DATE As String = "Orders.Pressing Due Date" ' TODO (date-only)
-
-    ' Wheel Dia & Cycle can come from CSV OR Opcenter.
-    ' For now, assume they are available from Opcenter fields (simplest).
-    Private Const FFP_ORDER_WHEEL_DIA As String = "Orders.Wheel Dia"            ' TODO
-    Private Const FFP_ORDER_CYCLE_CODE As String = "Orders.Cycle Code"          ' TODO (e.g., 150VT/102VT/65VT)
-
-
-    Public Function Run(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
-
+    Public Function runFiring(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
-        Dim ordersTable As Integer
+        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+
+        ' Example: import a CSV, build pressing queue, create ranked queue and schedule
+        'Dim filePath As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\Templates\Routing.csv"
+
+        'Dim routingDt As DataTable = ImportRoutingCsvToDataTable(filePath)
+        Dim routingDt As DataTable = readOrderTable(preactor)
+
+        'Dim currentDate As New System.DateTime(2025, 8, 1, 0, 0, 0)
+        Dim currentDate As DateTime = planningboard.TerminatorTime
+
+
+        'Append schedule times from board for a few operation numbers (example)
+
+        Dim AKLN As Integer = planningboard.GetResourceNumber("AKLN")
+        Dim BKLN As Integer = planningboard.GetResourceNumber("BKLN")
+        Dim CKLN As Integer = planningboard.GetResourceNumber("CKLN")
+        Dim DKLN As Integer = planningboard.GetResourceNumber("DKLN")
+        Dim RKLN As Integer = planningboard.GetResourceNumber("RKLN")
+        Dim NKLN As Integer = planningboard.GetResourceNumber("NKLN")
+        Dim LOADBICK As Integer = planningboard.GetResourceNumber("LOADBICK")
+
+
+
+        ' Build firing plan using firing optimizer (external class)
+        Dim minOcc As Double = 0.8
+        Dim maxOcc As Double = 1.0
+        'Dim firingObj As New firingOptimizer_vf
+        'Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc, batchStartDelayMins:=60)
+        Dim debugFolder As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\Debug\Firing_" &
+                            DateTime.Now.ToString("yyyyMMdd_HHmmss")
+
+        Dim firingObj As New firingOptimizer_vf()
+        firingObj.ExportFiringCandidateDebug(routingDt, debugFolder)
+
+        ' Then call your normal BuildBatchKilnPlan + ExportPlanToCsv as before
+        Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc,
+                                        allowUnderfilledTail:=True,
+                                        batchStartDelayMins:=60,
+                                        maxBatchesPerDayGlobal:=2)
+
+        ' Debugger
+        firingObj.ExportPlanToCsv(plan, debugFolder)
+
+
+        ' 1) iterate firing queue (these are op 300 record numbers)
+        For Each firingOpRec As Integer In plan.QueueFiringOpRecs
+
+            ' 2) get batch metadata
+            Dim batchNo As Integer = plan.BatchNoByFiringOpRec(firingOpRec)
+            Dim batchStart As DateTime = plan.BatchStartByBatchNo(batchNo)
+            Dim batchEnd As DateTime = plan.BatchEndByBatchNo(batchNo)
+            Dim kilnName As String = plan.KilnByBatchNo(batchNo)
+            Dim batchKind As String = plan.BatchKindByBatchNo(batchNo)
+
+
+            Select Case (kilnName)
+                Case "AKLN"
+                    planningboard.PutOperationOnResource(firingOpRec, AKLN, batchStart)
+                    planningboard.PutOperationOnResource(firingOpRec - 1, LOADBICK, planningboard.BackTestOpOnResource(firingOpRec - 1, LOADBICK, batchStart).Value.ProcessStart)
+
+                Case "BKLN"
+                    planningboard.PutOperationOnResource(firingOpRec, BKLN, batchStart)
+                    planningboard.PutOperationOnResource(firingOpRec - 1, LOADBICK, planningboard.BackTestOpOnResource(firingOpRec - 1, LOADBICK, batchStart).Value.ProcessStart)
+
+                Case "CKLN"
+                    planningboard.PutOperationOnResource(firingOpRec, CKLN, batchStart)
+                    planningboard.PutOperationOnResource(firingOpRec - 1, LOADBICK, planningboard.BackTestOpOnResource(firingOpRec - 1, LOADBICK, batchStart).Value.ProcessStart)
+
+                Case "DKLN"
+                    planningboard.PutOperationOnResource(firingOpRec, DKLN, batchStart)
+                    planningboard.PutOperationOnResource(firingOpRec - 1, LOADBICK, planningboard.BackTestOpOnResource(firingOpRec - 1, LOADBICK, batchStart).Value.ProcessStart)
+
+                Case "RKLN"
+                    planningboard.PutOperationOnResource(firingOpRec, RKLN, batchStart)
+                    planningboard.PutOperationOnResource(firingOpRec - 1, LOADBICK, planningboard.BackTestOpOnResource(firingOpRec - 1, LOADBICK, batchStart).Value.ProcessStart)
+
+                Case "NKLN"
+                    planningboard.PutOperationOnResource(firingOpRec, NKLN, batchStart)
+                    planningboard.PutOperationOnResource(firingOpRec - 1, LOADBICK, planningboard.BackTestOpOnResource(firingOpRec - 1, LOADBICK, batchStart).Value.ProcessStart)
+
+            End Select
+        Next
+
+
+        preactor.DestroyStatus()
+
+        Return 0
+    End Function
+
+    Public Function runFiring2(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+
+        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        Dim routingDt As DataTable = readOrderTable(preactor)
+
+        'Dim currentDate As New System.DateTime(2025, 8, 1, 0, 0, 0)
+        Dim currentDate As DateTime = planningboard.TerminatorTime
+
+        ' Build firing plan using firing optimizer (external class)
+        Dim minOccPreferred As Double = 0.8
+        Dim maxOcc As Double = 1.0
+
+
+        ' Parameters you will provide
+        Dim totalCartsAvailable As Integer = 28
+        Dim cartsPerDay As Double = 4.5
+        Dim dryingToFiringBufferHours As Double = 4.0
+        Dim TCBK As Integer = planningboard.GetResourceNumber("TCBK")
+
+        Dim tunnelObj As New tunnelOptimizer_vf
+
+        ' currentDate = your scheduling anchor (same as you used earlier)
+        ' This is the start cursor for cart generation. Your logic can choose:
+        ' - currentDate, or
+        ' - earliest ReadyTime in the dataset
+        Dim plan = tunnelObj.BuildTunnelPlan(
+    routingDt,
+    startTime:=currentDate,
+    cartsPerDay:=cartsPerDay,
+    totalCarts:=totalCartsAvailable,
+    minOccPreferred:=minOccPreferred,
+    maxOcc:=maxOcc,
+    dryingToFiringBufferHours:=dryingToFiringBufferHours
+)
+
+        For Each firingOpRec As Integer In plan.CartNoByFiringOpRec.Keys
+
+            Dim cartNo As Integer = plan.CartNoByFiringOpRec(firingOpRec)
+            Dim batchstart As DateTime = plan.StartByFiringOpRec(firingOpRec)
+            preactor.WriteField(ordersTable, 108, firingOpRec, 28 / 4.5)
+            planningboard.PutOperationOnResource(firingOpRec, TCBK, batchstart)
+
+        Next
+        Return 0
+    End Function
+
+    Public Function runFix(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+
+        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
+        Dim routingDt As DataTable = readOrderTable(preactor)
+        Dim currentDate As DateTime = planningboard.TerminatorTime
+        Dim DRYER As Integer = planningboard.GetResourceNumber("DRYER")
+        Dim times As OperationTimes?
+
+
+
+        ' where ever the start time of op 290 is > that terminator time
+        ' find start time of op 290 for every eligible order
+        ' find the dryer operation (rec-2)
+        ' testoperationbackward from start time of op 290 -> start time of dryer
+        ' putoperation on resource at the testoperation.process start
+
+        Dim reccount = preactor.RecordCount(ordersTable)
+        Dim recOpNo As Integer
+        Dim nxtrecOpNo As Integer
+        For i As Integer = 1 To reccount
+            recOpNo = preactor.ReadFieldInt(ordersTable, opNoField, i)
+            'for DRYER fix
+            If recOpNo <> 260 Then Continue For
+            nxtrecOpNo = preactor.ReadFieldInt(ordersTable, opNoField, planningboard.GetNextOperation(i, 1))
+            If nxtrecOpNo <> 290 Then Continue For
+            If planningboard.GetOperationTimes(i + 1).Value.OperationTimes.ProcessStart < currentDate Then Continue For
+            times = planningboard.BackTestOpOnResource(i, DRYER, planningboard.GetOperationTimes(i + 1).Value.OperationTimes.ProcessStart)
+            planningboard.PutOperationOnResource(i, DRYER, times.Value.ProcessStart)
+        Next
+
+        Dim times2 As DateTime
+        Dim oprec As Integer = 1
+        For i As Integer = 1 To reccount
+            If preactor.ReadFieldInt(ordersTable, opNoField, i) <> 200 Then Continue For
+            oprec = planningboard.GetPreviousOperation(i, 1)
+            times2 = planningboard.GetOperationTimes(i).Value.OperationTimes.ProcessStart
+            If times2 < currentDate Then Continue For
+            While (oprec > 0)
+                planningboard.PutOperationOnResource(oprec, 1, times2.AddDays(-1))
+                oprec = planningboard.GetPreviousOperation(oprec, 1)
+            End While
+        Next
+
+        Return 0
+    End Function
+
+
+    Public Function showMeta(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+
+        Dim times As Preactor.CalendarState? = planningboard.GetCurrentCalendarState(planningboard.GetResourceNumber("PL06001A"), planningboard.TerminatorTime)
+
+        preactor.CreateRecord(114)
+        Dim lastRec As Integer = preactor.RecordCount(114)
+        preactor.WriteField(114, "Order No.", lastRec, "Aggregate Record 1")
+        preactor.WriteField(114, "Aggregate Record", lastRec, True)
+        Dim x As Integer = 1
+        preactor.SetAutoListSize("Orders", "Members", lastRec, 1)
+        preactor.WriteMatrixField("Orders", "Members", lastRec, 1, 1, 1)
+
+
+
+        'preactor.WriteMatrixField(114, "Members", lastRec, )
+        'preactor.WriteListField(formatNumber:=114, fieldName:="Members", record:=lastRec, value:="120810087 - 300 (FIRING/BAKING, Bickley Batch Kilns)", x:=0)
+        '120810087 - 300 (FIRING/BAKING, Bickley Batch Kilns)
+        '120810087 - 300 (FIRING/BAKING, Bickley Batch Kilns)
+        'Try
+        '    ' ... your normal rule setup here ...
+
+        '    ShowExplorerUI()   ' <-- call this when you want the UI
+
+        '    Return 0
+        'Catch ex As Exception
+        '    ' log ex.Message somewhere
+        '    Return -1
+        'End Try
+        preactor.Redraw()
+        Return 0
+    End Function
+    Public Function Test(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+
+
+
+        Return 0
+    End Function
+
+    Public Function untilPress(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
         Dim opRec As Integer
+        Dim routingdt As DataTable
         Dim ResRec As Integer
         Dim ResRecs As IEnumerable(Of Integer)
         Dim opTimes As Nullable(Of Preactor.OperationTimes)
+        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
+        'Dim currentDate As New System.DateTime(2025, 8, 1, 0, 0, 0)
+        Dim currentDate As DateTime = planningboard.TerminatorTime
+        routingdt = readOrderTable(preactor)
+        Dim pressingQueue As List(Of Integer) = BuildPressing200Queue(routingdt, currentDate)
+        CreateRankedOperationQueue(preactor, planningboard, ordersTable, "JobsQueue", pressingQueue)
 
-
-        ordersTable = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
-        opRec = 0
-        ' CreateRankedParentQueue(preactor, planningboard, ordersTable, "JobsQueue")
-        Dim filePath As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\Templates\Routing.csv"
-        Dim routingDt As DataTable = ImportRoutingCsvToDataTable(filePath)
-        Dim currentDate As New System.DateTime(2025, 8, 1, 0, 0, 0)
-        Dim alist As List(Of Integer) = BuildPressing200Queue(routingDt, currentDate)
-        Dim firingList As List(Of Integer)
-
-        CreateRankedOperationQueue(preactor, planningboard, ordersTable, "JobsQueue", alist)
-
-        ' --- DEBUG: snapshot the JobsQueue contents (operation record numbers) ---
+        ' Snapshot for debugging
         Dim jobsQueueSnapshot As List(Of Integer) = GetQueueSnapshot(planningboard, "JobsQueue")
 
+        While (planningboard.GetOperationInQueue("JobsQueue", 1, opRec))
+            ' Take the next operation out of the ranked queue so we can decide where to load it.
+            planningboard.RemoveOperationFromQueue("JobsQueue", opRec)
+
+            ' Inner loop: schedule this operation and then walk to subsequent operations
+            ' (your "family" / routing chain) using GetNextOperation.
+            While (opRec > 0)
+                If preactor.ReadFieldInt(ordersTable, opNoField, opRec) >= 200 Then Exit While
+                ' Find all valid alternate resources for this operation.
+                ResRecs = planningboard.FindResources(opRec)
+
+                ' Track the best (earliest) feasible candidate we find.
+                Dim bestResRec As Integer = 0
+                Dim bestOpTimes As Nullable(Of Preactor.OperationTimes) = Nothing
+
+                ' Loop through *all* alternate resources and test feasibility on each.
+                For Each ResRec In ResRecs
+
+                    ' Test if the operation can be placed on this resource, and get the timing result.
+                    ' TerminatorTime is the boundary between schedule history and schedule future;
+                    ' using it here aligns with "schedule as soon as possible" in the future horizon. :contentReference[oaicite:3]{index=3}
+                    opTimes = planningboard.TestOperationOnResource(opRec, ResRec, planningboard.TerminatorTime)
+
+                    If opTimes.HasValue Then
+                        ' This resource is feasible. Compare it to the current best candidate.
+                        ' We want the earliest possible start time (ChangeStart).
+                        If (Not bestOpTimes.HasValue) Then
+                            ' First feasible candidate becomes the best by default.
+                            bestResRec = ResRec
+                            bestOpTimes = opTimes
+                        Else
+                            ' Replace best candidate if this one starts earlier.
+                            If opTimes.Value.ChangeStart < bestOpTimes.Value.ChangeStart Then
+                                bestResRec = ResRec
+                                bestOpTimes = opTimes
+                            End If
+                        End If
+                    End If
+
+                Next ' evaluate next alternate resource
+
+                ' After scanning all alternates:
+                If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
+                    ' Load the operation onto the resource that gives the earliest feasible start.
+                    ' planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
+                    planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ProcessStart.AddDays(-1))
+                Else
+                    ' No feasible resource was found.
+                    ' Practical meaning:
+                    '   - This operation cannot be scheduled on any alternate resource at/after the terminator boundary
+                    '     under current constraints (calendars, setups, secondary constraints, etc.).
+                    ' Leave it unscheduled (or handle with a custom queue / reason code if your design requires).
+                End If
+                ' Move to the next operation in the routing chain.
+                opRec = planningboard.GetNextOperation(opRec, 1) ' API-supported routing traversal:contentReference[oaicite:4]{index=4}
+
+            End While ' next operation in chain
+
+        End While ' next op in JobsQueue
+        Return 0
+    End Function
+
+    'Public Function runPress(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+    '    Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+    '    Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+    '    Dim opRec As Integer
+    '    Dim routingdt As DataTable
+    '    Dim ResRec As Integer
+    '    Dim ResRecs As IEnumerable(Of Integer)
+    '    Dim opTimes As Nullable(Of Preactor.OperationTimes)
+    '    Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+    '    routingdt = readOrderTable(preactor)
+    '    Dim currentDate As DateTime = planningboard.TerminatorTime
+    '    Dim pressingQueue As List(Of Integer) = BuildPressing200Queue(routingdt, currentDate)
+    '    CreateRankedOperationQueue(preactor, planningboard, ordersTable, "JobsQueue", pressingQueue)
+    '    Dim starttime As DateTime = DateTime.Now
+
+
+    '    ' Snapshot for debugging
+    '    Dim jobsQueueSnapshot As List(Of Integer) = GetQueueSnapshot(planningboard, "JobsQueue")
+
+    '    While (planningboard.GetOperationInQueue("JobsQueue", 1, opRec))
+
+    '        ' Take the next operation out of the ranked queue so we can decide where to load it.
+    '        planningboard.RemoveOperationFromQueue("JobsQueue", opRec)
+
+    '        ' Inner loop: schedule this operation and then walk to subsequent operations
+    '        ' (your "family" / routing chain) using GetNextOperation.
+    '        While (opRec > 0) ' this condition is wrong
+    '            If preactor.ReadFieldInt(114, 57, opRec) > 200 Then Exit While
+    '            If preactor.ReadFieldInt(114, 57, opRec) = 200 Then
+    '                ' Find all valid alternate resources for this operation.
+    '                ResRecs = planningboard.FindResources(opRec)
+
+    '                ' Track the best (earliest) feasible candidate we find.
+    '                Dim bestResRec As Integer = 0
+    '                Dim bestOpTimes As Nullable(Of Preactor.OperationTimes) = Nothing
+
+    '                ' Loop through *all* alternate resources and test feasibility on each.
+    '                For Each ResRec In ResRecs
+
+    '                    ' Test if the operation can be placed on this resource, and get the timing result.
+    '                    ' TerminatorTime is the boundary between schedule history and schedule future;
+    '                    ' using it here aligns with "schedule as soon as possible" in the future horizon. :contentReference[oaicite:3]{index=3}
+    '                    opTimes = planningboard.QueryOperationOnResource(opRec, ResRec, planningboard.TerminatorTime)
+
+    '                    If opTimes.HasValue Then
+    '                        ' This resource is feasible. Compare it to the current best candidate.
+    '                        ' We want the earliest possible start time (ChangeStart).
+    '                        If (Not bestOpTimes.HasValue) Then
+    '                            ' First feasible candidate becomes the best by default.
+    '                            bestResRec = ResRec
+    '                            bestOpTimes = opTimes
+    '                        Else
+    '                            ' Replace best candidate if this one starts earlier.
+    '                            If opTimes.Value.ChangeStart < bestOpTimes.Value.ChangeStart Then
+    '                                bestResRec = ResRec
+    '                                bestOpTimes = opTimes
+    '                            End If
+    '                        End If
+    '                    End If
+
+    '                Next ' evaluate next alternate resource
+
+    '                ' After scanning all alternates:
+    '                If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
+    '                    ' Load the operation onto the resource that gives the earliest feasible start.
+    '                    planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
+    '                    Try
+    '                        planningboard.PutOperationOnResource(opRec - 1, bestResRec, bestOpTimes.Value.ChangeStart.AddDays(-1))
+    '                        planningboard.PutOperationOnResource(opRec - 2, bestResRec, bestOpTimes.Value.ChangeStart.AddDays(-1))
+    '                    Catch ex As Exception
+
+    '                    End Try
+
+    '                Else
+    '                    ' No feasible resource was found.
+    '                    ' Practical meaning:
+    '                    '   - This operation cannot be scheduled on any alternate resource at/after the terminator boundary
+    '                    '     under current constraints (calendars, setups, secondary constraints, etc.).
+    '                    ' Leave it unscheduled (or handle with a custom queue / reason code if your design requires).
+    '                End If
+    '            End If
+    '            ' Move to the next operation in the routing chain.
+    '            opRec = planningboard.GetNextOperation(opRec, 1) ' API-supported routing traversal:contentReference[oaicite:4]{index=4}
+
+    '        End While ' next operation in chain
+
+    '    End While ' next op in JobsQueue
+    '    Dim endtime As DateTime = DateTime.Now
+    '    Debug.WriteLine(endtime - starttime)
+    '    Return 0
+    'End Function
+
+    Public Function runPress(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+        Dim opRec As Integer
+        Dim routingdt As DataTable
+        Dim ResRec As Integer
+        Dim ResRecs As IEnumerable(Of Integer)
+        Dim opTimes As Nullable(Of Preactor.OperationTimes)
+        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        routingdt = readOrderTable(preactor)
+        Dim currentDate As DateTime = planningboard.TerminatorTime
+        Dim pressingObj As New pressingOptimizer_vf()
+        Dim pressingQueue = pressingObj.BuildPressing200Queue(routingdt, currentDate, prioritizePrevOpFirst:=True)
+        CreateRankedOperationQueue(preactor, planningboard, ordersTable, "JobsQueue", pressingQueue)
+        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
+
+        ' Snapshot for debugging
+        Dim jobsQueueSnapshot As List(Of Integer) = GetQueueSnapshot(planningboard, "JobsQueue")
 
         While (planningboard.GetOperationInQueue("JobsQueue", 1, opRec))
 
@@ -86,46 +447,167 @@ Public Class AlgoSeq4
 
             ' Inner loop: schedule this operation and then walk to subsequent operations
             ' (your "family" / routing chain) using GetNextOperation.
-            ' While (opRec > 0)
+            While (opRec > 0) ' this condition is wrong
+                If preactor.ReadFieldInt(ordersTable, opNoField, opRec) > 200 Then Exit While
+                If preactor.ReadFieldInt(ordersTable, opNoField, opRec) = 200 Then
+                    ' Find all valid alternate resources for this operation.
+                    ResRecs = planningboard.FindResources(opRec)
 
-            ' Find all valid alternate resources for this operation.
-            ResRecs = planningboard.FindResources(opRec)
+                    ' Track the best (earliest) feasible candidate we find.
+                    Dim bestResRec As Integer = 0
+                    Dim bestOpTimes As Nullable(Of Preactor.OperationTimes) = Nothing
 
-            ' Track the best (earliest) feasible candidate we find.
-            Dim bestResRec As Integer = 0
-            Dim bestOpTimes As Nullable(Of Preactor.OperationTimes) = Nothing
+                    ' Loop through *all* alternate resources and test feasibility on each.
+                    For Each ResRec In ResRecs
 
-            ' Loop through *all* alternate resources and test feasibility on each.
-            For Each ResRec In ResRecs
+                        ' Test if the operation can be placed on this resource, and get the timing result.
+                        ' TerminatorTime is the boundary between schedule history and schedule future;
+                        ' using it here aligns with "schedule as soon as possible" in the future horizon. :contentReference[oaicite:3]{index=3}
+                        opTimes = planningboard.QueryOperationOnResource(opRec, ResRec, planningboard.TerminatorTime)
 
-                ' Test if the operation can be placed on this resource, and get the timing result.
-                ' TerminatorTime is the boundary between schedule history and schedule future;
-                ' using it here aligns with "schedule as soon as possible" in the future horizon. :contentReference[oaicite:3]{index=3}
-                opTimes = planningboard.TestOperationOnResource(opRec, ResRec, planningboard.TerminatorTime)
-
-                If opTimes.HasValue Then
-                    ' This resource is feasible. Compare it to the current best candidate.
-                    ' We want the earliest possible start time (ChangeStart).
-                    If (Not bestOpTimes.HasValue) Then
-                        ' First feasible candidate becomes the best by default.
-                        bestResRec = ResRec
-                        bestOpTimes = opTimes
-                    Else
-                        ' Replace best candidate if this one starts earlier.
-                        If opTimes.Value.ChangeStart < bestOpTimes.Value.ChangeStart Then
-                            bestResRec = ResRec
-                            bestOpTimes = opTimes
+                        If opTimes.HasValue Then
+                            ' This resource is feasible. Compare it to the current best candidate.
+                            ' We want the earliest possible start time (ChangeStart).
+                            If (Not bestOpTimes.HasValue) Then
+                                ' First feasible candidate becomes the best by default.
+                                bestResRec = ResRec
+                                bestOpTimes = opTimes
+                            Else
+                                ' Replace best candidate if this one starts earlier.
+                                If opTimes.Value.ChangeStart < bestOpTimes.Value.ChangeStart Then
+                                    bestResRec = ResRec
+                                    bestOpTimes = opTimes
+                                End If
+                            End If
                         End If
+
+                    Next ' evaluate next alternate resource
+
+                    ' After scanning all alternates:
+                    If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
+                        ' Load the operation onto the resource that gives the earliest feasible start.
+                        planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
+                        Try
+                            planningboard.PutOperationOnResource(opRec - 1, bestResRec, bestOpTimes.Value.ChangeStart.AddDays(-1))
+                            planningboard.PutOperationOnResource(opRec - 2, bestResRec, bestOpTimes.Value.ChangeStart.AddDays(-1))
+                        Catch ex As Exception
+
+                        End Try
+
+                    Else
+                        ' No feasible resource was found.
+                        ' Practical meaning:
+                        '   - This operation cannot be scheduled on any alternate resource at/after the terminator boundary
+                        '     under current constraints (calendars, setups, secondary constraints, etc.).
+                        ' Leave it unscheduled (or handle with a custom queue / reason code if your design requires).
                     End If
                 End If
+                ' Move to the next operation in the routing chain.
+                opRec = planningboard.GetNextOperation(opRec, 1) ' API-supported routing traversal:contentReference[oaicite:4]{index=4}
 
+            End While ' next operation in chain
 
-            Next ' evaluate next alternate resource
+        End While ' next op in JobsQueue
+        Return 0
+    End Function
+
+    Public Function runPressToFiring(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+
+        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        Dim opNofield As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
+        ' Example: import a CSV, build pressing queue, create ranked queue and schedule
+        'Dim filePath As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\Templates\Routing.csv"
+        'Dim routingDt As DataTable = ImportRoutingCsvToDataTable(filePath)
+        Dim currentDate As DateTime = planningboard.TerminatorTime
+        Dim ResRecs As IEnumerable(Of Integer)
+        Dim opTimes As Nullable(Of Preactor.OperationTimes)
+        Dim routingdt As DataTable = readOrderTable(preactor)
+        Dim pressingQueue As List(Of Integer) = BuildPressing200Queue(routingdt, currentDate)
+        CreateRankedOperationQueue(preactor, planningboard, ordersTable, "JobsQueue", pressingQueue)
+
+        ' Snapshot for debugging
+        Dim jobsQueueSnapshot As List(Of Integer) = GetQueueSnapshot(planningboard, "JobsQueue")
+
+        ' Simple scheduling loop: pop queue and place operation on earliest feasible resource
+        Dim pos As Integer = 1
+        Dim opRec As Integer = 1
+        Dim reccount As Integer = preactor.RecordCount(ordersTable)
+        Dim AIRDRY As Integer = planningboard.GetResourceNumber("AIRDRY")
+        Dim LOADBICK As Integer = planningboard.GetResourceNumber("LOADBICK")
+        Dim LOADPTK As Integer = planningboard.GetResourceNumber("LOADPTK")
+        Dim DRYER As Integer = planningboard.GetResourceNumber("DRYER")
+
+        '------------------------------------------------------------
+        ' Select the resource that gives the earliest feasible
+        ' ChangeStart time for the operation.
+        '
+        ' Key idea:
+        '   - Test the operation on ALL valid alternate resources
+        '   - Choose the candidate with the minimum ChangeStart
+        '   - Then load the operation on that chosen resource
+        '------------------------------------------------------------
+
+        '        While (planningboard.GetOperationInQueue("JobsQueue", 1, opRec))
+
+        ' Take the next operation out of the ranked queue so we can decide where to load it.
+        '        planningboard.RemoveOperationFromQueue("JobsQueue", opRec)
+
+        ' Inner loop: schedule this operation and then walk to subsequent operations
+        ' (your "family" / routing chain) using GetNextOperation.
+        While (opRec > 0 And opRec < reccount)
+            If preactor.ReadFieldInt(ordersTable, opNofield, opRec) > 200 And preactor.ReadFieldInt(ordersTable, opNofield, opRec) < 290 Then
+                ' Find all valid alternate resources for this operation.
+                ResRecs = planningboard.FindResources(opRec)
+
+                ' Track the best (earliest) feasible candidate we find.
+                Dim bestResRec As Integer = 0
+                Dim bestOpTimes As Nullable(Of Preactor.OperationTimes) = Nothing
+
+                ' Loop through *all* alternate resources and test feasibility on each.
+                For Each ResRec In ResRecs
+
+                    ' Test if the operation can be placed on this resource, and get the timing result.
+                    ' TerminatorTime is the boundary between schedule history and schedule future;
+                    ' using it here aligns with "schedule as soon as possible" in the future horizon. :contentReference[oaicite:3]{index=3}
+                    opTimes = planningboard.TestOperationOnResource(opRec, ResRec, planningboard.TerminatorTime)
+
+                    If opTimes.HasValue Then
+                        ' This resource is feasible. Compare it to the current best candidate.
+                        ' We want the earliest possible start time (ChangeStart).
+                        If (Not bestOpTimes.HasValue) Then
+                            ' First feasible candidate becomes the best by default.
+                            bestResRec = ResRec
+                            bestOpTimes = opTimes
+                        Else
+                            ' Replace best candidate if this one starts earlier.
+                            If opTimes.Value.ChangeStart < bestOpTimes.Value.ChangeStart Then
+                                bestResRec = ResRec
+                                bestOpTimes = opTimes
+                            End If
+                        End If
+                    End If
+
+                Next ' evaluate next alternate resource
 
                 ' After scanning all alternates:
                 If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
-                    ' Load the operation onto the resource that gives the earliest feasible start.
-                    planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
+                    If bestResRec = AIRDRY Then
+                        ' Load the operation onto the resource that gives the earliest feasible start.
+                        planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart.Date.AddDays(1))
+                        'ElseIf bestResRec = LOADBICK Or bestResRec = LOADPTK Then
+                        '    planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart.Date.AddDays(1))
+                    ElseIf bestResRec = DRYER Then
+                        Dim i As DateTime
+                        Dim batchTime As Double = preactor.ReadFieldDouble(ordersTable, 108, opRec + 2)
+                        i = bestOpTimes.Value.ChangeStart.AddDays(batchTime + 1)
+                        If i > preactor.ReadFieldDateTime(ordersTable, 46, opRec) Then
+                            planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
+                        Else
+                            planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
+                        End If
+                    End If
                 Else
                     ' No feasible resource was found.
                     ' Practical meaning:
@@ -133,371 +615,71 @@ Public Class AlgoSeq4
                     '     under current constraints (calendars, setups, secondary constraints, etc.).
                     ' Leave it unscheduled (or handle with a custom queue / reason code if your design requires).
                 End If
-
+            End If
             ' Move to the next operation in the routing chain.
-            ' opRec = planningboard.GetNextOperation(opRec, 1) ' API-supported routing traversal:contentReference[oaicite:4]{index=4}
+            'opRec = planningboard.GetNextOperation(opRec, 1)
+            opRec += 1 ' API-supported routing traversal:contentReference[oaicite:4]{index=4}
 
-            ' End While ' next operation in chain
+        End While ' next operation in chain
 
-        End While ' next op in JobsQueue
-        routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 100)
-        routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 200)
-        routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 250)
-        routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 260)
-        routingDt = AppendOperationTimesFromBoard(routingDt, preactor, planningboard, 270)
-
-        Dim minOcc As Double = 0.8
-        Dim maxOcc As Double = 1.0
-        Dim firingOject As New firingOptimizer_vf
-        Dim plan As firingOptimizer_vf.FiringBatchPlan = firingOject.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc)
-
-        ' 1) iterate firing queue (these are op 300 record numbers)
-        For Each firingOpRec As Integer In plan.QueueFiringOpRecs
-
-            ' 2) get batch metadata
-            Dim batchNo As Integer = plan.BatchNoByFiringOpRec(firingOpRec)
-            Dim batchStart As DateTime = plan.BatchStartByBatchNo(batchNo).AddMinutes(60)
-            Dim batchEnd As DateTime = plan.BatchEndByBatchNo(batchNo)
-            Dim kilnName As String = plan.KilnByBatchNo(batchNo)
-            Dim batchKind As String = plan.BatchKindByBatchNo(batchNo)
-
-            Select Case (kilnName)
-                Case "AKLN"
-                    planningboard.TestOperationOnResource(firingOpRec, 66, batchStart)
-                    planningboard.PutOperationOnResource(firingOpRec, 66, batchStart)
-                Case "BKLN"
-                    planningboard.PutOperationOnResource(firingOpRec, 67, batchStart)
-                Case "CKLN"
-                    planningboard.PutOperationOnResource(firingOpRec, 68, batchStart)
-                Case "DKLN"
-                    planningboard.PutOperationOnResource(firingOpRec, 69, batchStart)
-                Case "RKLN"
-                    planningboard.PutOperationOnResource(firingOpRec, 70, batchStart)
-                Case "NKLN"
-                    planningboard.PutOperationOnResource(firingOpRec, 71, batchStart)
-            End Select
-
-            ' 3) schedule operations in your preferred order:
-            ' - loading (290/291) before batchStart (you’ll locate the correct opRec and assign)
-            ' - firing (300) at batchStart on kilnName
-            ' - unloading (310/311) after batchEnd
-            '
-            ' You can still validate kiln assignment here with TestOperationOnResource()
-        Next
-
-        firingOject.ExportPlanToCsv(plan, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\")
-
-
-
+        '      End While ' next op in JobsQueue
+        preactor.DestroyStatus()
         Return 0
     End Function
 
-    Private Function CreateRankedParentQueue(ByRef preactor As IPreactor, ByVal planningboard As IPlanningBoard,
-                                                 ByVal ordersTable As Integer, ByVal QName As String) As Integer
 
 
-        Dim ordersParent As Preactor.FormatFieldPair
-        Dim dueDateField As Nullable(Of Preactor.FormatFieldPair)
-        Dim priorityField As Nullable(Of Preactor.FormatFieldPair)
-        Dim dueDateField2 As Nullable(Of Preactor.FormatFieldPair)
+    Private Sub ShowExplorerUI()
+        ' If Run() is not on an STA thread, create one for WinForms
+        Dim t As New Thread(Sub()
+                                Application.EnableVisualStyles()
+                                Application.SetCompatibleTextRenderingDefault(False)
 
-        Dim parentRecord As Integer
-        Dim SequenceMode As Preactor.SequenceMode
-        Dim familyFields As IEnumerable(Of Preactor.FormatFieldPair)
-        Dim nextrec As Integer
-        ordersParent = New FormatFieldPair()
-        familyFields = preactor.FindClassificationString("FAMILY")
+                                Using frm As New DataViewExplorerForm()
+                                    frm.StartPosition = FormStartPosition.CenterScreen
+                                    frm.ShowDialog() ' blocks until closed
+                                End Using
+                            End Sub)
 
-        For Each familyField In familyFields
-            If (familyField.FormatNumber = ordersTable) Then
-                ordersParent = familyField
-            End If
-        Next
-        'My code starts
-        Dim orderNoField As Preactor.FormatFieldPair
-        Dim ordersOpNoField As Preactor.FormatFieldPair
-        ordersOpNoField = New FormatFieldPair()
-        Dim opNoFields As IEnumerable(Of Preactor.FormatFieldPair)
-        opNoFields = preactor.FindClassificationString("OP NO")
-        Dim orderNoFields As IEnumerable(Of Preactor.FormatFieldPair)
-        orderNoFields = preactor.FindClassificationString("ORDER NO")
-
-        For Each orderNo In orderNoFields
-            If (orderNo.FormatNumber = ordersTable) Then
-                orderNoField = orderNo
-            End If
-        Next
-
-        For Each opNofield In opNoFields
-            If (opNofield.FormatNumber = ordersTable) Then
-                ordersOpNoField = opNofield
-            End If
-        Next
-
-        'end
-        dueDateField = preactor.FindFirstClassificationString("DUE DATE")
-        dueDateField2 = getformatfieldpair(preactor, field:="OP NO")
-        priorityField = preactor.FindFirstClassificationString("PRIORITY")
-
-        planningboard.CreateQueue(QName)
-        parentRecord = preactor.FindMatchingRecord(ordersParent, parentRecord, -1)
-        While (parentRecord > 0)
-            If (planningboard.GetOperationLocateState(parentRecord)) Then
-                If (planningboard.IsOperationScheduled(parentRecord)) Then
-                    nextrec = parentRecord
-                    While (nextrec > 0)
-                        If (Not planningboard.IsOperationScheduled(nextrec)) Then
-                            planningboard.AddOperationToQueue(QName, nextrec, QueuePosition.End)
-                            nextrec = 0
-                        Else
-                            nextrec = planningboard.GetNextOperation(nextrec, 1)
-                        End If
-                    End While
-                Else
-                    planningboard.AddOperationToQueue(QName, parentRecord, QueuePosition.End)
-                End If
-
-
-                parentRecord = preactor.FindMatchingRecord(ordersParent, parentRecord, -1)
-            End If ' if this order was highlighted
-        End While
-
-        SequenceMode = planningboard.SequenceMode
-        Select Case SequenceMode.Priority
-
-            Case SequencePriority.DueDate
-                If (dueDateField.HasValue) Then
-                    planningboard.RankQueueByFieldName(QName, preactor.GetFieldName(dueDateField.Value), QueueRanking.Ascending)
-                End If
-            Case SequencePriority.Priority
-                If (priorityField.HasValue) Then
-                    planningboard.RankQueueByFieldName(QName, preactor.GetFieldName(priorityField.Value), QueueRanking.Ascending)
-                End If
-            Case SequencePriority.ReversePriority
-                If (priorityField.HasValue) Then
-                    planningboard.RankQueueByFieldName(QName, preactor.GetFieldName(priorityField.Value), QueueRanking.Descending)
-                End If
-
-            Case Else
-        End Select
-
-
-
-        Return 0
-    End Function
-
-    ' Returns the current contents of a PlanningBoard queue as a list of operation record numbers,
-    ' in queue order (position 1, 2, 3, ...). This does NOT modify the queue.
-    Private Function GetQueueSnapshot(ByVal planningboard As IPlanningBoard, ByVal queueName As String) As List(Of Integer)
-
-        Dim snapshot As New List(Of Integer)()
-
-        Dim pos As Integer = 1
-        Dim opRec As Integer = 0
-
-        ' GetOperationInQueue(queueName, position, opRec) returns True if an item exists at that position
-        ' and sets opRec to the record number. When there are no more items, it returns False.
-        While planningboard.GetOperationInQueue(queueName, pos, opRec)
-            snapshot.Add(opRec)
-            pos += 1
-        End While
-
-        Return snapshot
-    End Function
-
-    Private Function CreateRankedOperationQueue(ByRef preactor As IPreactor, ByVal planningboard As IPlanningBoard,
-                                                 ByVal ordersTable As Integer, ByVal QName As String, ByVal Queue As List(Of Integer)) As Integer
-        planningboard.CreateQueue(QName)
-        For Each queuevalue In Queue
-            planningboard.AddOperationToQueue(QName, queuevalue, QueuePosition.End)
-        Next
-
-        Return 0
-    End Function
-
-    ' Returns a queue of OrdersID (record numbers) for op 200 rows.
-    Public Function BuildPressing200Queue(dt As DataTable,
-                                          currentDate As DateTime,
-                                          Optional approachingDays As Integer = 2) As List(Of Integer)
-
-        If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
-
-        RequireColumn(dt, "OrdersID")
-        RequireColumn(dt, "Operation Number")
-        RequireColumn(dt, "Pressing earliest start")
-        RequireColumn(dt, "pressing due date")
-        RequireColumn(dt, "Wheel Dia")
-        RequireColumn(dt, "Wheel thickness") ' treated as Wheel Pin (string)
-        RequireColumn(dt, "Cycle Type")
-
-        Dim today As DateTime = currentDate.Date
-        Dim approachCutoff As DateTime = today.AddDays(approachingDays)
-
-        Dim candidates As New List(Of Candidate)()
-
-        For Each r As DataRow In dt.Rows
-
-            Dim opNo As Integer = SafeInt(r("Operation Number"))
-            If opNo <> 200 Then Continue For
-
-            Dim orderId As Integer = SafeInt(r("OrdersID"))
-            If orderId <= 0 Then Continue For
-
-            Dim earliest As DateTime = SafeDate(r("Pressing earliest start")).Date
-            Dim due As DateTime = SafeDate(r("Pressing Due date")).Date
-
-            Dim missingEarliest As Boolean = (earliest = DateTime.MinValue)
-            Dim missingDue As Boolean = (due = DateTime.MinValue)
-
-            Dim inTier0 As Boolean = (Not missingEarliest AndAlso earliest <= approachCutoff)
-            Dim inTier1 As Boolean = (Not missingDue AndAlso due < today AndAlso Not inTier0)
-
-            Dim tier As Integer
-            If (earliest <> DateTime.MinValue AndAlso due <> DateTime.MinValue AndAlso
-    earliest <= approachCutoff AndAlso due >= today) Then
-                tier = 0
-            ElseIf (due <> DateTime.MinValue AndAlso due < today) Then
-                tier = 1
-            Else
-                tier = 2
-            End If
-
-            Dim wheelDia As String = SafeStr(r("Wheel Dia")).Trim()
-            Dim wheelPin As String = SafeStr(r("Wheel thickness")).Trim() ' pin as STRING
-            Dim cycleType As String = SafeStr(r("Cycle Type")).Trim()
-            Dim cycleRank As Integer = GetCycleRank(cycleType)
-
-            candidates.Add(New Candidate With {
-                .OrdersID = orderId,
-                .Earliest = earliest,
-                .Due = due,
-                .Tier = tier,
-                .WheelDia = wheelDia,
-                .WheelPin = wheelPin,
-                .TypeKey = wheelDia & "|" & wheelPin,
-                .CycleRank = cycleRank,
-                .MissingEarliest = missingEarliest,
-                .MissingDue = missingDue
-            })
-        Next
-
-        ' Primary sort:
-        ' - Tier order: 0 -> 1 -> 2
-        ' - Within tier: protect on-time delivery by due date (NO late-first priority)
-        ' - Then earliest start (prepone)
-        ' - Then larger cycles
-        ' - Then TypeKey for changeover tendency
-        Dim sorted = candidates.
-            OrderBy(Function(c) c.Tier).
-            ThenBy(Function(c) If(c.MissingDue, DateTime.MaxValue, c.Due)).          ' due date first
-            ThenBy(Function(c) If(c.MissingEarliest, DateTime.MaxValue, c.Earliest)). ' earliest start
-            ThenByDescending(Function(c) c.CycleRank).                                ' 150VT > 102VT > 65VT
-            ThenBy(Function(c) c.TypeKey).
-            ThenBy(Function(c) c.OrdersID).
-            ToList()
-
-        ' Batching/changeover minimization:
-        ' Only cluster within the SAME tier, and don't pull across due-date ordering aggressively.
-        Dim batched = GreedyTypeBatchingWithinTier(sorted, lookahead:=50)
-
-        Return batched.Select(Function(c) c.OrdersID).Distinct().ToList()
-    End Function
-
-    Private Function GreedyTypeBatchingWithinTier(sorted As List(Of Candidate),
-                                                  Optional lookahead As Integer = 50) As List(Of Candidate)
-
-        If sorted.Count <= 2 Then Return sorted
-
-        Dim work As New List(Of Candidate)(sorted)
-        Dim result As New List(Of Candidate)(work.Count)
-
-        Dim i As Integer = 0
-        While i < work.Count
-            Dim cur = work(i)
-            result.Add(cur)
-
-            If Not String.IsNullOrEmpty(cur.TypeKey) Then
-                Dim pulled As Integer = 0
-                Dim j As Integer = i + 1
-
-                While j < work.Count AndAlso pulled < lookahead
-                    ' Only pull-forward within same tier AND don't jump ahead of earlier due dates.
-                    ' Since the base sort is due-date ascending, pulling forward can only be "safe"
-                    ' if the candidate has the SAME due date.
-                    If work(j).Tier = cur.Tier AndAlso
-                       work(j).TypeKey = cur.TypeKey AndAlso
-                       work(j).Due = cur.Due Then
-
-                        result.Add(work(j))
-                        work.RemoveAt(j)
-                        pulled += 1
-                        Continue While
-                    End If
-                    j += 1
-                End While
-            End If
-
-            i += 1
-        End While
-
-        Return result
-    End Function
-
-    Private Function GetCycleRank(cycleType As String) As Integer
-        If String.IsNullOrWhiteSpace(cycleType) Then Return 0
-        Select Case cycleType.Trim().ToUpperInvariant()
-            Case "150VT" : Return 3
-            Case "102VT" : Return 2
-            Case "65VT" : Return 1
-            Case Else : Return 0
-        End Select
-    End Function
-
-    Private Sub RequireColumn(dt As DataTable, name As String)
-        If Not dt.Columns.Contains(name) Then Throw New ArgumentException($"Missing required column: '{name}'")
+        t.SetApartmentState(ApartmentState.STA)
+        t.IsBackground = True
+        t.Start()
+        t.Join() ' Wait until user closes form (remove Join() if you do NOT want to block)
     End Sub
 
-    Private Function SafeInt(o As Object) As Integer
-        If o Is Nothing Then Return 0
-        If TypeOf o Is Integer Then Return CInt(o)
-        Dim s As String = o.ToString().Trim()
-        Dim v As Integer
-        If Integer.TryParse(s, v) Then Return v
+
+    Private Function CreateRankedOperationQueue(ByRef preactor As IPreactor, ByVal planningboard As IPlanningBoard,
+                                                ByVal ordersTable As Integer, ByVal QName As String, ByVal queue As List(Of Integer)) As Integer
+        planningboard.CreateQueue(QName)
+        For Each q In queue
+            planningboard.AddOperationToQueue(QName, q, QueuePosition.End)
+        Next
         Return 0
     End Function
 
-    Private Function SafeDate(o As Object) As DateTime
-        If o Is Nothing Then Return DateTime.MinValue
-        If TypeOf o Is DateTime Then Return CType(o, DateTime)
-        Return DateTime.MinValue
+    Public Function freezeWindow(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object, Optional days As Integer = 2) As Integer
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+        Dim currentDate As DateTime = planningboard.TerminatorTime
+
+        Dim resrecs As Integer = planningboard.ResourceCount
+        For i As Integer = 1 To resrecs
+            planningboard.LockResource(i, currentDate, currentDate.AddDays(2), OperationReferencePoint.AnyPart, True)
+        Next
+
+        preactor.DestroyStatus()
+        Return 0
     End Function
 
-    Private Function SafeStr(o As Object) As String
-        If o Is Nothing Then Return ""
-        Return o.ToString()
-    End Function
 
-    Private Class Candidate
-        Public Property OrdersID As Integer
-        Public Property Earliest As DateTime
-        Public Property Due As DateTime
-        Public Property Tier As Integer
-        Public Property WheelDia As String
-        Public Property WheelPin As String
-        Public Property TypeKey As String
-        Public Property CycleRank As Integer
-        Public Property MissingEarliest As Boolean
-        Public Property MissingDue As Boolean
-    End Class
-
-
+    ' ----------------------
+    ' CSV import helper
+    ' ----------------------
     Public Function ImportRoutingCsvToDataTable(csvPath As String) As DataTable
-
         If String.IsNullOrWhiteSpace(csvPath) Then Throw New ArgumentException("csvPath is empty.")
         If Not IO.File.Exists(csvPath) Then Throw New IO.FileNotFoundException("CSV not found.", csvPath)
 
         Dim dt As New DataTable("Routing")
-
         Using parser As New TextFieldParser(csvPath)
             parser.TextFieldType = FieldType.Delimited
             parser.SetDelimiters(",")
@@ -506,90 +688,55 @@ Public Class AlgoSeq4
 
             If parser.EndOfData Then Return dt
 
-            ' Header row
             Dim headers = parser.ReadFields()
             If headers Is Nothing OrElse headers.Length = 0 Then Return dt
 
-            ' Create columns (minimal typing: only key + dates are typed; rest as String/Double as needed)
             For Each h In headers
                 Dim colName = h.Trim()
-
                 Dim colType As Type = GetType(String)
-
                 Select Case colName
                     Case "OrdersID", "Order No", "Part Number", "Sales Order", "Quantity", "Operation Number"
                         colType = GetType(Integer)
-
-                    Case "Setup Time", "Time Per Item", "Batch Time", "Tonnage", "Volume Occupancy",
-                         "Firing buffer", "MTS/MTO", "MTS/MTO priority", "Que Time",
-                         "Pressing buffer", "Wheel thickness", "Week start"
+                    Case "Setup Time", "Time Per Item", "Batch Time", "Tonnage", "Volume Occupancy", "Firing buffer", "MTS/MTO", "MTS/MTO priority", "Que Time", "Pressing buffer", "Wheel thickness", "Week start"
                         colType = GetType(Double)
-
                     Case "Due Date", "Pressing earliest start", "pressing due date"
                         colType = GetType(DateTime)
-
                     Case Else
                         colType = GetType(String)
                 End Select
-
                 dt.Columns.Add(New DataColumn(colName, colType))
             Next
 
-            ' Data rows
             While Not parser.EndOfData
                 Dim fields = parser.ReadFields()
                 If fields Is Nothing Then Continue While
-
                 Dim row = dt.NewRow()
-
                 For i As Integer = 0 To dt.Columns.Count - 1
                     Dim raw As String = If(i < fields.Length, fields(i), "")
                     raw = If(raw, "").Trim()
-
                     Dim col = dt.Columns(i)
-
                     If String.IsNullOrEmpty(raw) Then
                         row(i) = GetDefaultValue(col.DataType)
                         Continue For
                     End If
-
                     Try
                         If col.DataType Is GetType(Integer) Then
                             row(i) = Integer.Parse(raw, CultureInfo.InvariantCulture)
-
                         ElseIf col.DataType Is GetType(Double) Then
                             row(i) = Double.Parse(raw, CultureInfo.InvariantCulture)
-
                         ElseIf col.DataType Is GetType(DateTime) Then
-                            row(i) = ParseDateDdMmYyyy(raw)
-
+                            row(i) = SharedHelpers.ParseDateDdMmYyyy(raw)
                         Else
                             row(i) = raw
                         End If
-
                     Catch
-                        ' Keep it debuggable: on bad parse, store default
                         row(i) = GetDefaultValue(col.DataType)
                     End Try
                 Next
-
                 dt.Rows.Add(row)
             End While
         End Using
-
         Return dt
-    End Function
-
-    Private Function ParseDateDdMmYyyy(s As String) As DateTime
-        ' Expected: dd-MM-yyyy (e.g., 02-09-2025)
-        Dim formats As String() = {"dd-MM-yyyy", "d-M-yyyy", "dd-M-yyyy", "d-MM-yyyy"}
-        Dim dt As DateTime
-
-        If DateTime.TryParseExact(s, formats, CultureInfo.InvariantCulture, DateTimeStyles.None, dt) Then
-            Return dt.Date
-        End If
-
-        Throw New FormatException("Invalid date: " & s)
     End Function
 
     Private Function GetDefaultValue(t As Type) As Object
@@ -600,68 +747,20 @@ Public Class AlgoSeq4
         Return Nothing
     End Function
 
-
-
-    Private Function getformatfieldpair(ByVal preactor As IPreactor, Optional ByVal field As String = "Field", Optional ByVal format As String = "Format") As Preactor.FormatFieldPair?
-
-        Dim ffp As Nullable(Of Preactor.FormatFieldPair)
-        Dim fields As IEnumerable(Of Preactor.FormatFieldPair)
-        Dim orderstable As Integer
-        ffp = New FormatFieldPair
-
-        Select Case field
-            Case "DUE DATE", "PRIORITY", "EARLIEST START DATE"
-                ffp = preactor.FindFirstClassificationString(field)
-            Case "PRODUCT", "OP NO", "OPERATION NAME", "STRING ATTRIBUTE 1", "STRING ATTRIBUTE 2", "ORDER NO", "QUANTITY", "TABLE ATTRIBUTE 1", "TABLE ATTRIBUTE 2", "TABLE ATTRIBUTE 3", "RESOURCE"
-                orderstable = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
-                fields = preactor.FindClassificationString(field)
-                For Each field1 In fields
-                    If (field1.FormatNumber = orderstable) Then
-                        ffp = field1
-                    End If
-                Next
-            Case Else
-                ffp = Nothing
-        End Select
-        Select Case format
-            Case "ORDERS"
-                ffp = preactor.FindFirstClassificationString("LAUNCH TIME")
-        End Select
-        Return ffp
-    End Function
-    ' This function gets the entire Orders table at any instance 
-    ' I can also add a list parameter that will let me choose what columns are to be part of the datatable
-    ' add start time, end time, isscheduled ?
-    Private Function getOrderTable(ByVal preactor As IPreactor) As DataTable
-        Dim dt As DataTable
-        Dim orderstable As Integer
-        Dim recCount As Integer
-        orderstable = getformatfieldpair(preactor, format:="ORDERS").Value.FormatNumber
-        Dim recno, orderNo, qty, dueDate, opNo As Integer
-        Dim strAttrbute1 As Integer
-
-
-        recCount = preactor.RecordCount(orderstable)
-
-        Return Nothing
-    End Function
-
-    'this function appends the start time, end time columns 
-    ' and updates the values for the respective op number
+    ' ----------------------
+    ' Append operation times from planning board into CSV datatable
+    ' ----------------------
     Public Function AppendOperationTimesFromBoard(dt As DataTable,
-                                         preactor As IPreactor,
-                                         planningboard As IPlanningBoard,
-                                         opNumber As Integer) As DataTable
-
+                                                 preactor As IPreactor,
+                                                 planningboard As IPlanningBoard,
+                                                 opNumber As Integer) As DataTable
         If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
         If preactor Is Nothing Then Throw New ArgumentNullException(NameOf(preactor))
         If planningboard Is Nothing Then Throw New ArgumentNullException(NameOf(planningboard))
 
-        ' Required CSV columns
-        RequireColumn(dt, "OrdersID")
-        RequireColumn(dt, "Operation Number")
+        SharedHelpers.RequireColumn(dt, "OrdersID")
+        SharedHelpers.RequireColumn(dt, "Operation Number")
 
-        ' Add output columns if missing
         Dim startColName As String = "scheduled_start_time"
         Dim endColName As String = "scheduled_end_time"
         Dim schColName As String = "is_scheduled"
@@ -670,1109 +769,249 @@ Public Class AlgoSeq4
         If Not dt.Columns.Contains(endColName) Then dt.Columns.Add(endColName, GetType(DateTime))
         If Not dt.Columns.Contains(schColName) Then dt.Columns.Add(schColName, GetType(Boolean))
 
-        ' ---- IMPORTANT: keep these two FormatFieldPair tokens consistent with your environment ----
-        ' If your tokens differ, change them here only.
-        'My code starts
-        Dim orderNoField As Preactor.FormatFieldPair
-        Dim ordersOpNoField As Preactor.FormatFieldPair
-        ordersOpNoField = New FormatFieldPair()
-        Dim opNoFields As IEnumerable(Of Preactor.FormatFieldPair)
-        opNoFields = preactor.FindClassificationString("OP NO")
-        Dim orderNoFields As IEnumerable(Of Preactor.FormatFieldPair)
-        orderNoFields = preactor.FindClassificationString("ORDER NO")
-        Dim ordersTable As Integer
-        ' ordersTable = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
-        ordersTable = getformatfieldpair(preactor, format:="ORDERS").Value.FormatNumber
-
-
-        For Each orderNo In orderNoFields
-            If (orderNo.FormatNumber = ordersTable) Then
-                orderNoField = orderNo
-            End If
+        Dim ordersTable As Integer = getformatfieldpair(preactor, format:="ORDERS").FormatNumber
+        Dim opNoFields = preactor.FindClassificationString("OP NO")
+        Dim ordersOpNoField As Preactor.FormatFieldPair = Nothing
+        For Each f In opNoFields
+            If f.FormatNumber = ordersTable Then ordersOpNoField = f
         Next
+        'If ordersOpNoField Is Nothing Then Return dt
 
-        For Each opNofield In opNoFields
-            If (opNofield.FormatNumber = ordersTable) Then
-                ordersOpNoField = opNofield
-            End If
-        Next
+        Dim opCount As Integer = preactor.RecordCount(ordersTable)
 
-        'end
-
-        Dim opTableNo As Integer = ordersOpNoField.FormatNumber
-        Dim opCount As Integer = preactor.RecordCount(opTableNo)
-
-        ' Build: orderRec -> list of opRec where op number matches
-        Dim opsByOrder As New Dictionary(Of Integer, List(Of Integer))()
+        Dim idColumn As DataColumn = dt.Columns("OrdersID")
+        dt.PrimaryKey = New DataColumn() {idColumn}
 
         For opRec As Integer = 1 To opCount
-
-            Dim opNo As Integer
+            Dim oNo As Integer
             Try
-                opNo = preactor.ReadFieldInt(ordersOpNoField.FormatNumber, ordersOpNoField.FieldNumber, opRec)
+                oNo = preactor.ReadFieldInt(ordersOpNoField.FormatNumber, ordersOpNoField.FieldNumber, opRec)
             Catch
                 Continue For
             End Try
+            If oNo <> opNumber Then Continue For
 
-            If opNo <> opNumber Then Continue For
-
-            Dim orderRec As Integer
+            ' find corresponding CSV row(s) by OrdersID (order record assumed stored in OrdersID column)
+            Dim rowtoupdate As DataRow = Nothing
             Try
-                orderRec = preactor.ReadFieldInt(ordersOpNoField.FormatNumber, ordersOpNoField.FieldNumber, opRec)
+                rowtoupdate = dt.Rows.Find(opRec)
             Catch
-                Continue For
             End Try
 
-            If orderRec <= 0 Then Continue For
-            Dim idColumn As DataColumn = dt.Columns("OrdersID")
-            dt.PrimaryKey = New DataColumn() {idColumn}
-
-            Dim rowtoupdate As DataRow
-            rowtoupdate = dt.Rows.Find(opRec)
             If rowtoupdate IsNot Nothing Then
-                rowtoupdate("scheduled_start_time") = planningboard.GetOperationTimes(opRec).Value.OperationTimes.ProcessStart
-                rowtoupdate("scheduled_end_time") = planningboard.GetOperationTimes(opRec).Value.OperationTimes.ProcessEnd
-                rowtoupdate("is_scheduled") = True
-
+                Dim ot = planningboard.GetOperationTimes(opRec)
+                If ot.HasValue Then
+                    rowtoupdate(startColName) = ot.Value.OperationTimes.ProcessStart
+                    rowtoupdate(endColName) = ot.Value.OperationTimes.ProcessEnd
+                    rowtoupdate(schColName) = True
+                End If
             End If
-
-            If Not opsByOrder.ContainsKey(orderRec) Then opsByOrder(orderRec) = New List(Of Integer)()
-            opsByOrder(orderRec).Add(opRec)
         Next
 
         Return dt
     End Function
 
-    '------------------------------------------------------------------------------------------------------
-
-    'Public Class FiringBatchPlan
-    '    ' Queue of FIRING operation record numbers (your OrdersID for op 300 rows)
-    '    Public Property QueueFiringOpRecs As New List(Of Integer)
-
-    '    ' Batch metadata
-    '    Public Property BatchNoByFiringOpRec As New Dictionary(Of Integer, Integer)
-    '    Public Property BatchStartByBatchNo As New Dictionary(Of Integer, DateTime)
-    '    Public Property BatchEndByBatchNo As New Dictionary(Of Integer, DateTime)
-    '    Public Property KilnByBatchNo As New Dictionary(Of Integer, String)
-    '    Public Property BatchKindByBatchNo As New Dictionary(Of Integer, String) ' pure_150VT, mixed_150VT_102VT, etc.
-    '    Public Property GoverningCycleByBatchNo As New Dictionary(Of Integer, String)
-
-    '    ' Optional debug counters
-    '    Public Property TotalLateOrders As Integer = 0
-    '    Public Property TotalBatches As Integer = 0
-    'End Class
-
-
-    'Private Const COL_ORDERNO As String = "Order No"
-    'Private Const COL_OPREC As String = "OrdersID"
-    'Private Const COL_OPNO As String = "Operation Number"
-    'Private Const COL_KILNTYPE As String = "Klin Type"
-    'Private Const COL_CYCLE As String = "Cycle Type"
-    'Private Const COL_OCC As String = "Volume Occupancy"
-    'Private Const COL_BATCHTIME As String = "Batch Time"
-
-    'Private Const COL_IS_SCHEDULED As String = "is_scheduled"
-    'Private Const COL_SCHED_END As String = "scheduled_end_time"
-    'Private Const COL_FIRING_DUE As String = "firing due date"
-
-    '' ----------------------------
-    '' CYCLE PRIORITY & MIX RULES
-    '' ----------------------------
-    'Private ReadOnly CyclePriority1 As String() = {"150VT", "102VT", "65VT"}
-
-    '' Allowed mixes (adjacent only)
-    'Private ReadOnly MixA_Hi As String = "150VT"
-    'Private ReadOnly MixA_Lo As String = "102VT"
-    'Private ReadOnly MixB_Hi As String = "102VT"
-    'Private ReadOnly MixB_Lo As String = "65VT"
-
-    '' Entry point:
-    '' dt: your schedule export (DataTable)
-    '' kilnCsvPath: /mnt/data/kilndata.csv (or local path)
-    '' startTime: "now" for kiln availability baseline
-    '' minOcc/maxOcc: parameterized occupancy range
-    '' allowUnderfilledTail: if True, only when no future readiness exists, allow final underfilled legal batches
-    'Public Function BuildBatchKilnPlan(dt As DataTable,
-    '                                   kilnCsvPath As String,
-    '                                   startTime As DateTime,
-    '                                   minOcc As Double,
-    '                                   maxOcc As Double,
-    '                                   Optional allowUnderfilledTail As Boolean = True) As FiringBatchPlan
-
-    '    ValidateInputs(dt, minOcc, maxOcc)
-
-    '    Dim kilnSupport As Dictionary(Of String, HashSet(Of String)) = ReadKilnBatchSupport(kilnCsvPath)
-    '    If kilnSupport.Count = 0 Then Throw New ArgumentException("Kiln matrix has no usable Batch cycle support rows.")
-
-    '    ' Build candidates per order (Batch-only + op300 exists + readiness computed from <290)
-    '    Dim candidates As List(Of OrderCandidate) = BuildCandidates(dt)
-
-    '    ' Initialize kiln availability
-    '    Dim kilnAvail As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
-    '    For Each k As String In kilnSupport.Keys
-    '        kilnAvail(k) = startTime
-    '    Next
-
-    '    ' Assign batches iteratively
-    '    Dim unassigned As New Dictionary(Of Integer, OrderCandidate)() ' key = firingOpRec
-    '    For Each c In candidates
-    '        If Not unassigned.ContainsKey(c.FiringOpRec) Then unassigned.Add(c.FiringOpRec, c)
-    '    Next
-
-    '    Dim plan As New FiringBatchPlan()
-    '    Dim batchNo As Integer = 0
-
-    '    While unassigned.Count > 0
-
-    '        ' pick earliest-available kiln time (global)
-    '        Dim nextKiln As String = GetEarliestKiln(kilnAvail)
-    '        Dim t As DateTime = kilnAvail(nextKiln)
-
-    '        ' available pool = orders ready by time t
-    '        Dim availPool As List(Of OrderCandidate) = GetReadyPool(unassigned, t)
-
-    '        If availPool.Count = 0 Then
-    '            ' advance to next readiness (don’t idle kiln)
-    '            Dim nextReady As DateTime = GetNextReadyTime(unassigned)
-    '            kilnAvail(nextKiln) = If(nextReady > kilnAvail(nextKiln), nextReady, kilnAvail(nextKiln))
-    '            Continue While
-    '        End If
-
-    '        ' 1) try pure batches (priority 150>102>65)
-    '        Dim pureCands As List(Of BatchCandidate) = BuildPureBatchCandidates(availPool, kilnSupport, kilnAvail, minOcc, maxOcc)
-
-    '        ' 2) only if no pure candidate exists, allow mixed candidates
-    '        Dim mixedCands As List(Of BatchCandidate) = New List(Of BatchCandidate)()
-    '        If pureCands.Count = 0 Then
-    '            mixedCands = BuildMixedBatchCandidates(availPool, kilnSupport, kilnAvail, minOcc, maxOcc)
-    '        End If
-
-    '        Dim allCands As New List(Of BatchCandidate)()
-    '        allCands.AddRange(pureCands)
-    '        allCands.AddRange(mixedCands)
-
-    '        If allCands.Count = 0 Then
-    '            ' can't form legal minOcc batch right now -> wait for more orders
-    '            Dim nextReady As DateTime = GetNextReadyTimeAfter(unassigned, t)
-    '            If nextReady = DateTime.MinValue Then
-    '                ' no future readiness: tail situation
-    '                If allowUnderfilledTail Then
-    '                    allCands = BuildUnderfilledLegalCandidates(availPool, kilnSupport, kilnAvail, maxOcc)
-    '                    If allCands.Count = 0 Then Exit While
-    '                Else
-    '                    Exit While
-    '                End If
-    '            Else
-    '                kilnAvail(nextKiln) = nextReady
-    '                Continue While
-    '            End If
-    '        End If
-
-    '        ' Choose best candidate by objective:
-    '        ' Primary: minimize late count in this batch
-    '        ' Tie-breakers: prefer pure > mixed, then cycle priority, then higher occupancy, then more orders, then earlier start
-    '        Dim best As BatchCandidate = ChooseBestCandidate(allCands)
-
-    '        ' Commit batch
-    '        batchNo += 1
-    '        CommitBatch(plan, best, batchNo)
-
-    '        ' Mark assigned + update kiln availability
-    '        kilnAvail(best.KilnName) = best.BatchEnd
-    '        For Each o In best.Orders
-    '            unassigned.Remove(o.FiringOpRec)
-    '        Next
-    '    End While
-
-    '    plan.TotalBatches = plan.BatchStartByBatchNo.Count
-    '    Return plan
-    'End Function
-
-    '' ============================================================
-    ''  Candidate building
-    '' ============================================================
-
-    'Private Function BuildCandidates(dt As DataTable) As List(Of OrderCandidate)
-
-    '    Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
-
-    '    ' readiness = max scheduled_end_time among scheduled ops with op < 290
-    '    For Each r As DataRow In dt.Rows
-    '        If Not SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
-    '        Dim opNo As Integer = SafeInt(r(COL_OPNO))
-    '        If opNo >= 290 Then Continue For
-
-    '        Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
-    '        If orderNo = "" Then Continue For
-
-    '        Dim endT As DateTime = SafeDate(r(COL_SCHED_END))
-    '        If endT = DateTime.MinValue Then Continue For
-
-    '        If Not readyByOrder.ContainsKey(orderNo) OrElse endT > readyByOrder(orderNo) Then
-    '            readyByOrder(orderNo) = endT
-    '        End If
-    '    Next
-
-    '    ' build per-order from op 300 row (firing)
-    '    Dim list As New List(Of OrderCandidate)()
-
-    '    For Each r As DataRow In dt.Rows
-
-    '        Dim kilnType As String = SafeStr(r(COL_KILNTYPE)).Trim()
-    '        If Not kilnType.Equals("Batch", StringComparison.OrdinalIgnoreCase) Then Continue For
-
-    '        Dim opNo As Integer = SafeInt(r(COL_OPNO))
-    '        If opNo <> 300 Then Continue For
-
-    '        Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
-    '        If orderNo = "" Then Continue For
-    '        If Not readyByOrder.ContainsKey(orderNo) Then Continue For
-
-    '        Dim cycle As String = SafeStr(r(COL_CYCLE)).Trim().ToUpperInvariant()
-    '        If Not IsKnownCycle(cycle) Then Continue For
-
-    '        Dim occ As Double = SafeDbl(r(COL_OCC))
-    '        If occ <= 0 Then Continue For
-
-    '        Dim fireMins As Integer = CInt(Math.Truncate(SafeDbl(r(COL_BATCHTIME))))
-    '        If fireMins <= 0 Then Continue For
-
-    '        Dim firingDue As DateTime = ParseDueAsEndOfDay(r(COL_FIRING_DUE))
-    '        If firingDue = DateTime.MinValue Then Continue For
-
-    '        ' loading time must come from 290/291 rows; we’ll collect it separately by scanning dt
-    '        Dim loadMins As Integer = FindMaxLoadingMins(dt, orderNo)
-    '        ' If missing, assume 0 (your current export has 0 everywhere). Logic still works.
-    '        If loadMins < 0 Then loadMins = 0
-
-    '        Dim firingOpRec As Integer = SafeInt(r(COL_OPREC))
-    '        If firingOpRec <= 0 Then Continue For
-
-    '        Dim ready As DateTime = readyByOrder(orderNo)
-
-    '        list.Add(New OrderCandidate With {
-    '            .OrderNo = orderNo,
-    '            .FiringOpRec = firingOpRec,
-    '            .CycleType = cycle,
-    '            .Occ = occ,
-    '            .ReadyTime = ready,
-    '            .DueTime = firingDue,
-    '            .FireMins = fireMins,
-    '            .LoadMins = loadMins
-    '        })
-    '    Next
-
-    '    Return list
-    'End Function
-
-    'Private Function FindMaxLoadingMins(dt As DataTable, orderNo As String) As Integer
-    '    Dim maxMins As Integer = -1
-    '    For Each r As DataRow In dt.Rows
-    '        If Not SafeStr(r(COL_ORDERNO)).Trim().Equals(orderNo, StringComparison.OrdinalIgnoreCase) Then Continue For
-    '        Dim opNo As Integer = SafeInt(r(COL_OPNO))
-    '        If opNo <> 290 AndAlso opNo <> 291 Then Continue For
-
-    '        Dim mins As Integer = CInt(Math.Truncate(SafeDbl(r(COL_BATCHTIME))))
-    '        If mins > maxMins Then maxMins = mins
-    '    Next
-    '    Return maxMins
-    'End Function
-
-    '' ============================================================
-    ''  Batch candidate generation
-    '' ============================================================
-
-    'Private Function BuildPureBatchCandidates(pool As List(Of OrderCandidate),
-    '                                          kilnSupport As Dictionary(Of String, HashSet(Of String)),
-    '                                          kilnAvail As Dictionary(Of String, DateTime),
-    '                                          minOcc As Double,
-    '                                          maxOcc As Double) As List(Of BatchCandidate)
-
-    '    Dim cands As New List(Of BatchCandidate)()
-
-    '    For Each cyc As String In CyclePriority1
-    '        Dim same As List(Of OrderCandidate) = pool.FindAll(Function(o) o.CycleType = cyc)
-    '        Dim selected As List(Of OrderCandidate) = SelectOrdersForOccRange(same, minOcc, maxOcc)
-
-    '        If selected.Count > 0 Then
-    '            Dim cycles As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {cyc}
-    '            Dim best As BatchCandidate = MakeBatchCandidate("pure_" & cyc, cycles, selected, kilnSupport, kilnAvail)
-    '            If best IsNot Nothing Then cands.Add(best)
-    '        End If
-    '    Next
-
-    '    Return cands
-    'End Function
-
-    'Private Function BuildMixedBatchCandidates(pool As List(Of OrderCandidate),
-    '                                           kilnSupport As Dictionary(Of String, HashSet(Of String)),
-    '                                           kilnAvail As Dictionary(Of String, DateTime),
-    '                                           minOcc As Double,
-    '                                           maxOcc As Double) As List(Of BatchCandidate)
-
-    '    Dim cands As New List(Of BatchCandidate)()
-
-    '    ' allowed: 150+102 (governing 150), 102+65 (governing 102)
-    '    Dim m1 As BatchCandidate = TryBuildMixed(pool, MixA_Hi, MixA_Lo, minOcc, maxOcc, kilnSupport, kilnAvail)
-    '    If m1 IsNot Nothing Then cands.Add(m1)
-
-    '    Dim m2 As BatchCandidate = TryBuildMixed(pool, MixB_Hi, MixB_Lo, minOcc, maxOcc, kilnSupport, kilnAvail)
-    '    If m2 IsNot Nothing Then cands.Add(m2)
-
-    '    Return cands
-    'End Function
-
-    'Private Function BuildUnderfilledLegalCandidates(pool As List(Of OrderCandidate),
-    '                                                 kilnSupport As Dictionary(Of String, HashSet(Of String)),
-    '                                                 kilnAvail As Dictionary(Of String, DateTime),
-    '                                                 maxOcc As Double) As List(Of BatchCandidate)
-
-    '    Dim cands As New List(Of BatchCandidate)()
-
-    '    ' underfilled pure candidates (take whatever fits <= maxOcc)
-    '    For Each cyc As String In CyclePriority1
-    '        Dim same As List(Of OrderCandidate) = pool.FindAll(Function(o) o.CycleType = cyc)
-    '        Dim selected As List(Of OrderCandidate) = SelectOrdersUpToMaxOcc(same, maxOcc)
-    '        If selected.Count > 0 Then
-    '            Dim cycles As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {cyc}
-    '            Dim bc As BatchCandidate = MakeBatchCandidate("underfilled_pure_" & cyc, cycles, selected, kilnSupport, kilnAvail)
-    '            If bc IsNot Nothing Then cands.Add(bc)
-    '        End If
-    '    Next
-
-    '    ' underfilled mixed candidates (still legal mixes only)
-    '    Dim m1 As BatchCandidate = TryBuildMixed(pool, MixA_Hi, MixA_Lo, 0.0, maxOcc, kilnSupport, kilnAvail, underfilledPrefix:="underfilled_")
-    '    If m1 IsNot Nothing Then cands.Add(m1)
-
-    '    Dim m2 As BatchCandidate = TryBuildMixed(pool, MixB_Hi, MixB_Lo, 0.0, maxOcc, kilnSupport, kilnAvail, underfilledPrefix:="underfilled_")
-    '    If m2 IsNot Nothing Then cands.Add(m2)
-
-    '    Return cands
-    'End Function
-
-    'Private Function TryBuildMixed(pool As List(Of OrderCandidate),
-    '                               hi As String,
-    '                               lo As String,
-    '                               minOcc As Double,
-    '                               maxOcc As Double,
-    '                               kilnSupport As Dictionary(Of String, HashSet(Of String)),
-    '                               kilnAvail As Dictionary(Of String, DateTime),
-    '                               Optional underfilledPrefix As String = "") As BatchCandidate
-
-    '    Dim hiPool As List(Of OrderCandidate) = pool.FindAll(Function(o) o.CycleType = hi)
-    '    Dim loPool As List(Of OrderCandidate) = pool.FindAll(Function(o) o.CycleType = lo)
-    '    If hiPool.Count = 0 OrElse loPool.Count = 0 Then Return Nothing
-
-    '    ' Simple, debuggable mix strategy:
-    '    ' - take most urgent (earliest due) from hi
-    '    ' - fill with small-Occ from lo (but not causing more lateness—handled at scoring)
-    '    Dim seed As OrderCandidate = SortByDueThenReadyThenOcc(hiPool)(0)
-    '    Dim selected As New List(Of OrderCandidate)() From {seed}
-    '    Dim occSum As Double = seed.Occ
-
-    '    Dim loSorted As List(Of OrderCandidate) = SortByDueThenOccThenReady(loPool)
-    '    For Each o In loSorted
-    '        If occSum + o.Occ <= maxOcc + 0.0000001 Then
-    '            selected.Add(o) : occSum += o.Occ
-    '        End If
-    '        If occSum + 0.0000001 >= minOcc Then Exit For
-    '    Next
-
-    '    ' If still below minOcc, try adding more hi orders (small occ first)
-    '    If occSum + 0.0000001 < minOcc Then
-    '        Dim hiSorted As List(Of OrderCandidate) = SortByDueThenOccThenReady(hiPool)
-    '        For Each o In hiSorted
-    '            If o.FiringOpRec = seed.FiringOpRec Then Continue For
-    '            If occSum + o.Occ <= maxOcc + 0.0000001 Then
-    '                selected.Add(o) : occSum += o.Occ
-    '            End If
-    '            If occSum + 0.0000001 >= minOcc Then Exit For
-    '        Next
-    '    End If
-
-    '    ' must contain both cycles
-    '    Dim hasHi As Boolean = selected.Exists(Function(x) x.CycleType = hi)
-    '    Dim hasLo As Boolean = selected.Exists(Function(x) x.CycleType = lo)
-    '    If Not (hasHi AndAlso hasLo) Then Return Nothing
-
-    '    If occSum + 0.0000001 < minOcc Then Return Nothing
-
-    '    Dim cycles As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {hi, lo}
-    '    Return MakeBatchCandidate(underfilledPrefix & "mixed_" & hi & "_" & lo, cycles, selected, kilnSupport, kilnAvail)
-    'End Function
-
-    'Private Function MakeBatchCandidate(kind As String,
-    '                                    cycles As HashSet(Of String),
-    '                                    orders As List(Of OrderCandidate),
-    '                                    kilnSupport As Dictionary(Of String, HashSet(Of String)),
-    '                                    kilnAvail As Dictionary(Of String, DateTime)) As BatchCandidate
-
-    '    ' forbidden mix check: never 150+65
-    '    If cycles.Contains("150VT") AndAlso cycles.Contains("65VT") Then Return Nothing
-
-    '    Dim eligible As List(Of String) = GetEligibleKilns(kilnSupport, cycles)
-    '    If eligible.Count = 0 Then Return Nothing
-
-    '    ' choose kiln with earliest availability
-    '    Dim chosenKiln As String = eligible(0)
-    '    Dim bestAvail As DateTime = kilnAvail(chosenKiln)
-    '    For Each k As String In eligible
-    '        Dim a As DateTime = kilnAvail(k)
-    '        If a < bestAvail Then
-    '            bestAvail = a : chosenKiln = k
-    '        End If
-    '    Next
-
-    '    Dim maxReady As DateTime = GetMaxReady(orders)
-    '    Dim loadBuf As Integer = GetMaxLoadMins(orders)
-
-    '    ' firing must start after kiln availability AND after ready + loading buffer
-    '    Dim startBase As DateTime = kilnAvail(chosenKiln)
-    '    Dim startT As DateTime = startBase
-    '    Dim readyPlusLoad As DateTime = maxReady.AddMinutes(loadBuf)
-    '    If readyPlusLoad > startT Then startT = readyPlusLoad
-
-    '    Dim govCycle As String = GetGoverningCycle(kind, cycles)
-    '    Dim fireMins As Integer = GetGoverningFireMins(orders, govCycle)
-    '    Dim endT As DateTime = startT.AddMinutes(fireMins)
-
-    '    Dim late As Integer = CountLate(endT, orders)
-
-    '    Dim occSum As Double = 0
-    '    For Each o In orders : occSum += o.Occ : Next
-
-    '    Return New BatchCandidate With {
-    '        .BatchKind = kind,
-    '        .Cycles = cycles,
-    '        .GoverningCycle = govCycle,
-    '        .KilnName = chosenKiln,
-    '        .BatchStart = startT,
-    '        .BatchEnd = endT,
-    '        .Orders = orders,
-    '        .OccSum = occSum,
-    '        .LateCount = late
-    '    }
-    'End Function
-
-    '' ============================================================
-    ''  Choose best candidate (objective)
-    '' ============================================================
-
-    'Private Function ChooseBestCandidate(cands As List(Of BatchCandidate)) As BatchCandidate
-    '    Dim best As BatchCandidate = Nothing
-
-    '    For Each c In cands
-    '        If best Is Nothing Then
-    '            best = c
-    '        Else
-    '            If IsBetter(c, best) Then best = c
-    '        End If
-    '    Next
-
-    '    Return best
-    'End Function
-
-    'Private Function IsBetter(a As BatchCandidate, b As BatchCandidate) As Boolean
-    '    ' Primary objective: minimize #late orders
-    '    If a.LateCount <> b.LateCount Then Return a.LateCount < b.LateCount
-
-    '    ' Prefer pure over mixed when lateness equal
-    '    Dim aPure As Boolean = a.BatchKind.StartsWith("pure_", StringComparison.OrdinalIgnoreCase) OrElse a.BatchKind.StartsWith("underfilled_pure_", StringComparison.OrdinalIgnoreCase)
-    '    Dim bPure As Boolean = b.BatchKind.StartsWith("pure_", StringComparison.OrdinalIgnoreCase) OrElse b.BatchKind.StartsWith("underfilled_pure_", StringComparison.OrdinalIgnoreCase)
-    '    If aPure <> bPure Then Return aPure
-
-    '    ' Prefer higher governing cycle priority (150 > 102 > 65)
-    '    Dim ap As Integer = CyclePriorityIndex(a.GoverningCycle)
-    '    Dim bp As Integer = CyclePriorityIndex(b.GoverningCycle)
-    '    If ap <> bp Then Return ap < bp
-
-    '    ' Prefer higher occupancy (use capacity better)
-    '    If Math.Abs(a.OccSum - b.OccSum) > 0.0000001 Then Return a.OccSum > b.OccSum
-
-    '    ' Prefer more orders (packing objective)
-    '    If a.Orders.Count <> b.Orders.Count Then Return a.Orders.Count > b.Orders.Count
-
-    '    ' Earlier start time as last tie-breaker
-    '    Return a.BatchStart < b.BatchStart
-    'End Function
-
-    '' ============================================================
-    ''  Commit batch to plan
-    '' ============================================================
-
-    'Private Sub CommitBatch(plan As FiringBatchPlan, b As BatchCandidate, batchNo As Integer)
-
-    '    plan.BatchStartByBatchNo(batchNo) = b.BatchStart
-    '    plan.BatchEndByBatchNo(batchNo) = b.BatchEnd
-    '    plan.KilnByBatchNo(batchNo) = b.KilnName
-    '    plan.BatchKindByBatchNo(batchNo) = b.BatchKind
-    '    plan.GoverningCycleByBatchNo(batchNo) = b.GoverningCycle
-    '    plan.TotalLateOrders += b.LateCount
-
-    '    ' Stable in-batch order for your Run() loop:
-    '    ' due earliest first, then small occ, then ready
-    '    Dim ordered As List(Of OrderCandidate) = SortByDueThenOccThenReady(b.Orders)
-
-    '    For Each o In ordered
-    '        plan.QueueFiringOpRecs.Add(o.FiringOpRec)
-    '        plan.BatchNoByFiringOpRec(o.FiringOpRec) = batchNo
-    '    Next
-    'End Sub
-
-    '' ============================================================
-    ''  Kiln matrix reader (Batch columns: 65VT/102VT/150VT)
-    '' ============================================================
-
-    'Private Function ReadKilnBatchSupport(kilnCsvPath As String) As Dictionary(Of String, HashSet(Of String))
-
-    '    If String.IsNullOrWhiteSpace(kilnCsvPath) Then Throw New ArgumentException("kilnCsvPath is empty.")
-    '    If Not IO.File.Exists(kilnCsvPath) Then Throw New IO.FileNotFoundException("Kiln matrix file not found.", kilnCsvPath)
-
-    '    Dim support As New Dictionary(Of String, HashSet(Of String))(StringComparer.OrdinalIgnoreCase)
-
-    '    Using parser As New TextFieldParser(kilnCsvPath)
-    '        parser.TextFieldType = FieldType.Delimited
-    '        parser.SetDelimiters(",")
-    '        parser.HasFieldsEnclosedInQuotes = True
-    '        parser.TrimWhiteSpace = True
-
-    '        If parser.EndOfData Then Return support
-    '        Dim headers As String() = parser.ReadFields()
-    '        If headers Is Nothing OrElse headers.Length = 0 Then Return support
-
-    '        ' We expect columns: KLN names, and cycle columns: 65VT/102VT/150VT (Batch section)
-    '        Dim colNameIdx As Integer = Array.IndexOf(headers, "KLN names")
-    '        If colNameIdx < 0 Then colNameIdx = 0 ' fallback: first column
-
-    '        Dim idx65 As Integer = Array.IndexOf(headers, "65VT")
-    '        Dim idx102 As Integer = Array.IndexOf(headers, "102VT")
-    '        Dim idx150 As Integer = Array.IndexOf(headers, "150VT")
-
-    '        While Not parser.EndOfData
-    '            Dim fields As String() = parser.ReadFields()
-    '            If fields Is Nothing OrElse fields.Length = 0 Then Continue While
-
-    '            Dim kilnName As String = SafeArray(fields, colNameIdx).Trim()
-    '            If kilnName = "" Then Continue While
-
-    '            Dim setCycles As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-    '            If idx65 >= 0 AndAlso IsTruthy(SafeArray(fields, idx65)) Then setCycles.Add("65VT")
-    '            If idx102 >= 0 AndAlso IsTruthy(SafeArray(fields, idx102)) Then setCycles.Add("102VT")
-    '            If idx150 >= 0 AndAlso IsTruthy(SafeArray(fields, idx150)) Then setCycles.Add("150VT")
-
-    '            If setCycles.Count > 0 Then
-    '                support(kilnName) = setCycles
-    '            End If
-    '        End While
-    '    End Using
-
-    '    Return support
-    'End Function
-
-    '' ============================================================
-    ''  Utilities & sorting
-    '' ============================================================
-
-    'Private Function GetEligibleKilns(kilnSupport As Dictionary(Of String, HashSet(Of String)),
-    '                                  cycles As HashSet(Of String)) As List(Of String)
-
-    '    Dim list As New List(Of String)()
-    '    For Each kvp In kilnSupport
-    '        Dim ok As Boolean = True
-    '        For Each c In cycles
-    '            If Not kvp.Value.Contains(c) Then ok = False : Exit For
-    '        Next
-    '        If ok Then list.Add(kvp.Key)
-    '    Next
-    '    Return list
-    'End Function
-
-    'Private Function GetEarliestKiln(kilnAvail As Dictionary(Of String, DateTime)) As String
-    '    Dim best As String = Nothing
-    '    Dim bestT As DateTime = DateTime.MaxValue
-    '    For Each kvp In kilnAvail
-    '        If kvp.Value < bestT Then
-    '            bestT = kvp.Value
-    '            best = kvp.Key
-    '        End If
-    '    Next
-    '    Return best
-    'End Function
-
-    'Private Function GetReadyPool(unassigned As Dictionary(Of Integer, OrderCandidate), t As DateTime) As List(Of OrderCandidate)
-    '    Dim pool As New List(Of OrderCandidate)()
-    '    For Each kvp In unassigned
-    '        If kvp.Value.ReadyTime <= t Then pool.Add(kvp.Value)
-    '    Next
-    '    Return pool
-    'End Function
-
-    'Private Function GetNextReadyTime(unassigned As Dictionary(Of Integer, OrderCandidate)) As DateTime
-    '    Dim best As DateTime = DateTime.MaxValue
-    '    For Each kvp In unassigned
-    '        If kvp.Value.ReadyTime < best Then best = kvp.Value.ReadyTime
-    '    Next
-    '    Return best
-    'End Function
-
-    'Private Function GetNextReadyTimeAfter(unassigned As Dictionary(Of Integer, OrderCandidate), t As DateTime) As DateTime
-    '    Dim best As DateTime = DateTime.MaxValue
-    '    Dim found As Boolean = False
-    '    For Each kvp In unassigned
-    '        Dim rt As DateTime = kvp.Value.ReadyTime
-    '        If rt > t AndAlso rt < best Then
-    '            best = rt : found = True
-    '        End If
-    '    Next
-    '    If Not found Then Return DateTime.MinValue
-    '    Return best
-    'End Function
-
-    'Private Function SelectOrdersForOccRange(pool As List(Of OrderCandidate), minOcc As Double, maxOcc As Double) As List(Of OrderCandidate)
-    '    ' Greedy: urgent first, then smaller occupancy (pack more), then ready time
-    '    Dim sorted As List(Of OrderCandidate) = SortByDueThenOccThenReady(pool)
-
-    '    Dim sel As New List(Of OrderCandidate)()
-    '    Dim occ As Double = 0
-
-    '    For Each o In sorted
-    '        If occ + o.Occ <= maxOcc + 0.0000001 Then
-    '            sel.Add(o) : occ += o.Occ
-    '        End If
-    '        If occ + 0.0000001 >= minOcc Then Exit For
-    '    Next
-
-    '    If occ + 0.0000001 < minOcc Then Return New List(Of OrderCandidate)()
-
-    '    ' Pack additional small orders if room (still respecting due ordering since sorted)
-    '    For Each o In sorted
-    '        If sel.Contains(o) Then Continue For
-    '        If occ + o.Occ <= maxOcc + 0.0000001 Then
-    '            sel.Add(o) : occ += o.Occ
-    '        End If
-    '    Next
-
-    '    Return sel
-    'End Function
-
-    'Private Function SelectOrdersUpToMaxOcc(pool As List(Of OrderCandidate), maxOcc As Double) As List(Of OrderCandidate)
-    '    Dim sorted As List(Of OrderCandidate) = SortByDueThenOccThenReady(pool)
-    '    Dim sel As New List(Of OrderCandidate)()
-    '    Dim occ As Double = 0
-
-    '    For Each o In sorted
-    '        If occ + o.Occ <= maxOcc + 0.0000001 Then
-    '            sel.Add(o) : occ += o.Occ
-    '        End If
-    '    Next
-    '    Return sel
-    'End Function
-
-    'Private Function SortByDueThenOccThenReady(list As List(Of OrderCandidate)) As List(Of OrderCandidate)
-    '    list.Sort(Function(a, b)
-    '                  Dim c = a.DueTime.CompareTo(b.DueTime)
-    '                  If c <> 0 Then Return c
-    '                  c = a.Occ.CompareTo(b.Occ)
-    '                  If c <> 0 Then Return c
-    '                  Return a.ReadyTime.CompareTo(b.ReadyTime)
-    '              End Function)
-    '    Return list
-    'End Function
-
-    'Private Function SortByDueThenReadyThenOcc(list As List(Of OrderCandidate)) As List(Of OrderCandidate)
-    '    list.Sort(Function(a, b)
-    '                  Dim c = a.DueTime.CompareTo(b.DueTime)
-    '                  If c <> 0 Then Return c
-    '                  c = a.ReadyTime.CompareTo(b.ReadyTime)
-    '                  If c <> 0 Then Return c
-    '                  Return a.Occ.CompareTo(b.Occ)
-    '              End Function)
-    '    Return list
-    'End Function
-
-    'Private Function GetMaxReady(orders As List(Of OrderCandidate)) As DateTime
-    '    Dim maxT As DateTime = DateTime.MinValue
-    '    For Each o In orders
-    '        If o.ReadyTime > maxT Then maxT = o.ReadyTime
-    '    Next
-    '    Return maxT
-    'End Function
-
-    'Private Function GetMaxLoadMins(orders As List(Of OrderCandidate)) As Integer
-    '    Dim maxM As Integer = 0
-    '    For Each o In orders
-    '        If o.LoadMins > maxM Then maxM = o.LoadMins
-    '    Next
-    '    Return maxM
-    'End Function
-
-    'Private Function GetGoverningCycle(kind As String, cycles As HashSet(Of String)) As String
-    '    If kind.StartsWith("pure_", StringComparison.OrdinalIgnoreCase) Then
-    '        Return kind.Substring("pure_".Length).Replace("underfilled_", "")
-    '    End If
-
-    '    If kind.Contains("mixed_150VT_102VT") Then Return "150VT"
-    '    If kind.Contains("mixed_102VT_65VT") Then Return "102VT"
-
-    '    ' fallback: highest priority cycle present
-    '    For Each c In CyclePriority1
-    '        If cycles.Contains(c) Then Return c
-    '    Next
-    '    Return "102VT"
-    'End Function
-
-    'Private Function GetGoverningFireMins(orders As List(Of OrderCandidate), govCycle As String) As Integer
-    '    Dim maxM As Integer = 0
-    '    For Each o In orders
-    '        If o.CycleType = govCycle AndAlso o.FireMins > maxM Then maxM = o.FireMins
-    '    Next
-    '    ' fallback safety
-    '    If maxM = 0 Then
-    '        For Each o In orders
-    '            If o.FireMins > maxM Then maxM = o.FireMins
-    '        Next
-    '    End If
-    '    Return maxM
-    'End Function
-
-    'Private Function CountLate(batchEnd As DateTime, orders As List(Of OrderCandidate)) As Integer
-    '    Dim n As Integer = 0
-    '    For Each o In orders
-    '        If batchEnd > o.DueTime Then n += 1
-    '    Next
-    '    Return n
-    'End Function
-
-    'Private Function CyclePriorityIndex(cycle As String) As Integer
-    '    For i As Integer = 0 To CyclePriority1.Length - 1
-    '        If CyclePriority1(i).Equals(cycle, StringComparison.OrdinalIgnoreCase) Then Return i
-    '    Next
-    '    Return 99
-    'End Function
-
-    '' ============================================================
-    ''  Parsing helpers
-    '' ============================================================
-
-    'Private Function ParseDueAsEndOfDay(o As Object) As DateTime
-    '    Dim s As String = SafeStr(o).Trim()
-    '    If s = "" Then Return DateTime.MinValue
-
-    '    ' Your input is typically dd-mm-yyyy
-    '    Dim d As DateTime
-    '    If DateTime.TryParseExact(s,
-    '                              "dd-MM-yyyy",
-    '                              CultureInfo.InvariantCulture,
-    '                              DateTimeStyles.None,
-    '                              d) Then
-    '        Return d.Date.AddDays(1).AddTicks(-1) ' end of day
-    '    End If
-
-    '    ' fallback parse
-    '    If DateTime.TryParse(s, d) Then
-    '        Return d.Date.AddDays(1).AddTicks(-1)
-    '    End If
-
-    '    Return DateTime.MinValue
-    'End Function
-
-    'Private Sub ValidateInputs(dt As DataTable, minOcc As Double, maxOcc As Double)
-    '    If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
-    '    If minOcc <= 0 OrElse maxOcc <= 0 OrElse minOcc > maxOcc Then Throw New ArgumentException("Invalid occupancy range.")
-
-    '    RequireColumn(dt, COL_ORDERNO)
-    '    RequireColumn(dt, COL_OPREC)
-    '    RequireColumn(dt, COL_OPNO)
-    '    RequireColumn(dt, COL_KILNTYPE)
-    '    RequireColumn(dt, COL_CYCLE)
-    '    RequireColumn(dt, COL_OCC)
-    '    RequireColumn(dt, COL_BATCHTIME)
-    '    RequireColumn(dt, COL_IS_SCHEDULED)
-    '    RequireColumn(dt, COL_SCHED_END)
-    '    RequireColumn(dt, COL_FIRING_DUE)
-    'End Sub
-
-    ''Private Sub RequireColumn(dt As DataTable, name As String)
-    ''    If Not dt.Columns.Contains(name) Then Throw New ArgumentException("Missing required column: " & name)
-    ''End Sub
-
-    'Private Function IsKnownCycle(c As String) As Boolean
-    '    Return c = "150VT" OrElse c = "102VT" OrElse c = "65VT"
-    'End Function
-
-    'Private Function IsTruthy(s As String) As Boolean
-    '    If s Is Nothing Then Return False
-    '    Dim u As String = s.Trim().ToUpperInvariant()
-    '    Return u = "1" OrElse u = "TRUE" OrElse u = "T" OrElse u = "YES" OrElse u = "Y"
-    'End Function
-
-    'Private Function SafeArray(arr As String(), idx As Integer) As String
-    '    If arr Is Nothing Then Return ""
-    '    If idx < 0 OrElse idx >= arr.Length Then Return ""
-    '    Return If(arr(idx), "")
-    'End Function
-
-    ''Private Function SafeInt(o As Object) As Integer
-    ''    If o Is Nothing Then Return 0
-    ''    Dim v As Integer
-    ''    If Integer.TryParse(o.ToString().Trim(), v) Then Return v
-    ''    Return 0
-    ''End Function
-
-    'Private Function SafeDbl(o As Object) As Double
-    '    If o Is Nothing Then Return 0
-    '    Dim v As Double
-    '    If Double.TryParse(o.ToString().Trim(),
-    '                       NumberStyles.Any,
-    '                       CultureInfo.InvariantCulture,
-    '                       v) Then Return v
-    '    Return 0
-    'End Function
-
-    'Private Function SafeBool(o As Object) As Boolean
-    '    If o Is Nothing Then Return False
-    '    Dim s As String = o.ToString().Trim().ToUpperInvariant()
-    '    Return s = "TRUE" OrElse s = "T" OrElse s = "1" OrElse s = "YES" OrElse s = "Y"
-    'End Function
-
-    ''Private Function SafeDate(o As Object) As DateTime
-    ''    If o Is Nothing Then Return DateTime.MinValue
-    ''    If TypeOf o Is DateTime Then Return CType(o, DateTime)
-    ''    Dim d As DateTime
-    ''    If DateTime.TryParse(o.ToString(), d) Then Return d
-    ''    Return DateTime.MinValue
-    ''End Function
-
-    ''Private Function SafeStr(o As Object) As String
-    ''    If o Is Nothing Then Return ""
-    ''    Return o.ToString()
-    ''End Function
-
-    '' ============================================================
-    ''  Internal classes
-    '' ============================================================
-
-    'Private Class OrderCandidate
-    '    Public Property OrderNo As String
-    '    Public Property FiringOpRec As Integer
-    '    Public Property CycleType As String
-    '    Public Property Occ As Double
-    '    Public Property ReadyTime As DateTime
-    '    Public Property DueTime As DateTime
-    '    Public Property FireMins As Integer
-    '    Public Property LoadMins As Integer
-    'End Class
-
-    'Private Class BatchCandidate
-    '    Public Property BatchKind As String
-    '    Public Property Cycles As HashSet(Of String)
-    '    Public Property GoverningCycle As String
-    '    Public Property KilnName As String
-    '    Public Property BatchStart As DateTime
-    '    Public Property BatchEnd As DateTime
-    '    Public Property Orders As List(Of OrderCandidate)
-    '    Public Property OccSum As Double
-    '    Public Property LateCount As Integer
-    'End Class
-    '' Exports 3 files into the given folder path:
-    ''  1) BatchSummary.csv
-    ''  2) BatchPlan_Debug.csv
-    ''  3) FiringQueue_Return.csv
-    ''
-    '' Notes:
-    '' - Queue is per FIRING op record number (op 300 opRec) in plan.QueueFiringOpRecs
-    '' - BatchPlan_Debug is one row per queue item (per firing opRec)
-    '' - If you later add more per-order attributes into the plan, you can enrich the debug export easily.
-    'Public Sub ExportPlanToCsv(plan As FiringBatchPlan, folderPath As String)
-
-    '    If plan Is Nothing Then Throw New ArgumentNullException(NameOf(plan))
-    '    If String.IsNullOrWhiteSpace(folderPath) Then Throw New ArgumentException("folderPath is empty.")
-
-    '    Directory.CreateDirectory(folderPath)
-
-    '    Dim summaryPath As String = Path.Combine(folderPath, "BatchSummary.csv")
-    '    Dim debugPath As String = Path.Combine(folderPath, "BatchPlan_Debug.csv")
-    '    Dim queuePath As String = Path.Combine(folderPath, "FiringQueue_Return.csv")
-
-    '    ExportBatchSummary(plan, summaryPath)
-    '    ExportBatchPlanDebug(plan, debugPath)
-    '    ExportQueueOnly(plan, queuePath)
-    'End Sub
-
-    '' -----------------------------
-    '' 1) BatchSummary.csv
-    '' -----------------------------
-    'Private Sub ExportBatchSummary(plan As FiringBatchPlan, filePath As String)
-
-    '    Using w As New StreamWriter(filePath, append:=False, encoding:=New UTF8Encoding(encoderShouldEmitUTF8Identifier:=False))
-
-    '        w.WriteLine(String.Join(","c, New String() {
-    '            "BatchNo", "Kiln", "BatchKind", "GoverningCycle",
-    '            "BatchStart", "BatchEnd",
-    '            "NumOrders", "TotalLateOrdersSoFar"
-    '        }))
-
-    '        Dim runningLate As Integer = 0
-
-    '        ' Sort by BatchNo ascending
-    '        Dim batchNos As New List(Of Integer)(plan.BatchStartByBatchNo.Keys)
-    '        batchNos.Sort()
-
-    '        For Each b As Integer In batchNos
-
-    '            Dim kiln As String = GetOrEmpty(plan.KilnByBatchNo, b)
-    '            Dim kind As String = GetOrEmpty(plan.BatchKindByBatchNo, b)
-    '            Dim gov As String = GetOrEmpty(plan.GoverningCycleByBatchNo, b)
-
-    '            Dim bs As DateTime = plan.BatchStartByBatchNo(b)
-    '            Dim be As DateTime = plan.BatchEndByBatchNo(b)
-
-    '            Dim numOrders As Integer = CountOrdersInBatch(plan, b)
-
-    '            ' We only have plan.TotalLateOrders overall, not per batch.
-    '            ' If you want per-batch late counts, add LateCountByBatchNo to the plan and export it here.
-    '            ' For now we keep a placeholder "runningLate" that stays 0.
-    '            Dim row As String() = New String() {
-    '                b.ToString(CultureInfo.InvariantCulture),
-    '                Csv(kiln),
-    '                Csv(kind),
-    '                Csv(gov),
-    '                Csv(bs.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)),
-    '                Csv(be.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)),
-    '                numOrders.ToString(CultureInfo.InvariantCulture),
-    '                runningLate.ToString(CultureInfo.InvariantCulture)
-    '            }
-
-    '            w.WriteLine(String.Join(","c, row))
-    '        Next
-    '    End Using
-    'End Sub
-
-    '' -----------------------------
-    '' 2) BatchPlan_Debug.csv
-    '' One row per firing opRec in queue order
-    '' -----------------------------
-    'Private Sub ExportBatchPlanDebug(plan As FiringBatchPlan, filePath As String)
-
-    '    Using w As New StreamWriter(filePath, append:=False, encoding:=New UTF8Encoding(encoderShouldEmitUTF8Identifier:=False))
-
-    '        w.WriteLine(String.Join(","c, New String() {
-    '            "QueueIndex", "FiringOpRec", "BatchNo",
-    '            "Kiln", "BatchKind", "GoverningCycle",
-    '            "BatchStart", "BatchEnd"
-    '        }))
-
-    '        For i As Integer = 0 To plan.QueueFiringOpRecs.Count - 1
-
-    '            Dim firingOpRec As Integer = plan.QueueFiringOpRecs(i)
-    '            Dim batchNo As Integer = GetOrDefault(plan.BatchNoByFiringOpRec, firingOpRec, -1)
-
-    '            Dim kiln As String = If(batchNo > 0, GetOrEmpty(plan.KilnByBatchNo, batchNo), "")
-    '            Dim kind As String = If(batchNo > 0, GetOrEmpty(plan.BatchKindByBatchNo, batchNo), "")
-    '            Dim gov As String = If(batchNo > 0, GetOrEmpty(plan.GoverningCycleByBatchNo, batchNo), "")
-
-    '            Dim bs As DateTime = If(batchNo > 0 AndAlso plan.BatchStartByBatchNo.ContainsKey(batchNo), plan.BatchStartByBatchNo(batchNo), DateTime.MinValue)
-    '            Dim be As DateTime = If(batchNo > 0 AndAlso plan.BatchEndByBatchNo.ContainsKey(batchNo), plan.BatchEndByBatchNo(batchNo), DateTime.MinValue)
-
-    '            Dim row As String() = New String() {
-    '                (i + 1).ToString(CultureInfo.InvariantCulture),
-    '                firingOpRec.ToString(CultureInfo.InvariantCulture),
-    '                batchNo.ToString(CultureInfo.InvariantCulture),
-    '                Csv(kiln),
-    '                Csv(kind),
-    '                Csv(gov),
-    '                Csv(FormatDateOrBlank(bs)),
-    '                Csv(FormatDateOrBlank(be))
-    '            }
-
-    '            w.WriteLine(String.Join(","c, row))
-    '        Next
-    '    End Using
-    'End Sub
-
-    '' -----------------------------
-    '' 3) FiringQueue_Return.csv
-    '' Minimal Run()-consumable queue
-    '' -----------------------------
-    'Private Sub ExportQueueOnly(plan As FiringBatchPlan, filePath As String)
-
-    '    Using w As New StreamWriter(filePath, append:=False, encoding:=New UTF8Encoding(encoderShouldEmitUTF8Identifier:=False))
-
-    '        w.WriteLine(String.Join(","c, New String() {
-    '            "QueueIndex", "FiringOpRec", "BatchNo", "BatchStart", "Kiln", "BatchKind", "GoverningCycle"
-    '        }))
-
-    '        For i As Integer = 0 To plan.QueueFiringOpRecs.Count - 1
-
-    '            Dim firingOpRec As Integer = plan.QueueFiringOpRecs(i)
-    '            Dim batchNo As Integer = GetOrDefault(plan.BatchNoByFiringOpRec, firingOpRec, -1)
-
-    '            Dim kiln As String = If(batchNo > 0, GetOrEmpty(plan.KilnByBatchNo, batchNo), "")
-    '            Dim kind As String = If(batchNo > 0, GetOrEmpty(plan.BatchKindByBatchNo, batchNo), "")
-    '            Dim gov As String = If(batchNo > 0, GetOrEmpty(plan.GoverningCycleByBatchNo, batchNo), "")
-
-    '            Dim bs As DateTime = If(batchNo > 0 AndAlso plan.BatchStartByBatchNo.ContainsKey(batchNo), plan.BatchStartByBatchNo(batchNo), DateTime.MinValue)
-
-    '            Dim row As String() = New String() {
-    '                (i + 1).ToString(CultureInfo.InvariantCulture),
-    '                firingOpRec.ToString(CultureInfo.InvariantCulture),
-    '                batchNo.ToString(CultureInfo.InvariantCulture),
-    '                Csv(FormatDateOrBlank(bs)),
-    '                Csv(kiln),
-    '                Csv(kind),
-    '                Csv(gov)
-    '            }
-
-    '            w.WriteLine(String.Join(","c, row))
-    '        Next
-    '    End Using
-    'End Sub
-
-    '' -----------------------------
-    '' Helpers
-    '' -----------------------------
-
-    'Private Function CountOrdersInBatch(plan As FiringBatchPlan, batchNo As Integer) As Integer
-    '    Dim count As Integer = 0
-    '    For Each kvp In plan.BatchNoByFiringOpRec
-    '        If kvp.Value = batchNo Then count += 1
-    '    Next
-    '    Return count
-    'End Function
-
-    'Private Function FormatDateOrBlank(d As DateTime) As String
-    '    If d = DateTime.MinValue Then Return ""
-    '    Return d.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
-    'End Function
-
-    'Private Function Csv(value As String) As String
-    '    If value Is Nothing Then value = ""
-    '    Dim mustQuote As Boolean = value.Contains(","c) OrElse value.Contains(""""c) OrElse value.Contains(ControlChars.Cr) OrElse value.Contains(ControlChars.Lf)
-    '    If value.Contains(""""c) Then value = value.Replace("""", """""")
-    '    If mustQuote Then Return """" & value & """"
-    '    Return value
-    'End Function
-
-    'Private Function GetOrEmpty(Of TKey)(dict As Dictionary(Of TKey, String), key As TKey) As String
-    '    If dict Is Nothing Then Return ""
-    '    Dim v As String = ""
-    '    If dict.TryGetValue(key, v) Then Return If(v, "")
-    '    Return ""
-    'End Function
-
-    'Private Function GetOrEmpty(Of TKey)(dict As Dictionary(Of TKey, DateTime), key As TKey) As String
-    '    If dict Is Nothing Then Return ""
-    '    Dim v As DateTime
-    '    If dict.TryGetValue(key, v) Then Return v.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
-    '    Return ""
-    'End Function
-
-    'Private Function GetOrDefault(Of TKey, TValue)(dict As Dictionary(Of TKey, TValue), key As TKey, defaultValue As TValue) As TValue
-    '    If dict Is Nothing Then Return defaultValue
-    '    Dim v As TValue = defaultValue
-    '    If dict.TryGetValue(key, v) Then Return v
-    '    Return defaultValue
-    'End Function
+
+    ' New pressing optimizer
+    ' ----------------------
+    ' Pressing 200 queue builder (STRICT UNSCHEDULED) returning PARENT RECORD
+    ' Minimal changes from your original:
+    '   1) Adds is_scheduled + parent_record columns
+    '   2) Filters only op=PRESS_OP_NUMBER AND is_scheduled=False
+    '   3) Uses ParentRecord as the queue item instead of OrdersID
+    '   4) Cycle ranking remains via GetCycleRank(), but you can later replace it with a map/dictionary
+    ' ----------------------
+
+    ' Candidate structure used for sorting/batching
+    Private Class Candidate
+        Public Property ParentRecord As Integer          ' <-- NEW: queue key to return
+        Public Property Earliest As DateTime
+        Public Property Due As DateTime
+        Public Property Tier As Integer
+        Public Property WheelDia As String
+        Public Property WheelPin As String
+        Public Property TypeKey As String                ' WheelDia|WheelThickness
+        Public Property CycleRank As Integer
+        Public Property MissingEarliest As Boolean
+        Public Property MissingDue As Boolean
+    End Class
+
+    ' ----------------------
+    ' Pressing 200 queue builder
+    ' ----------------------
+    Public Function BuildPressing200Queue(dt As DataTable,
+                                      currentDate As DateTime,
+                                      Optional approachingDays As Integer = 2) As List(Of Integer)
+
+        If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
+
+        ' ---- Required columns (these must exist in dt) ----
+        ' NOTE: Keep these names EXACTLY matching your DataTable column names.
+        SharedHelpers.RequireColumn(dt, "parent_record")               ' <-- NEW
+        SharedHelpers.RequireColumn(dt, "is_scheduled")                ' <-- NEW
+
+        SharedHelpers.RequireColumn(dt, "Operation Number")
+        SharedHelpers.RequireColumn(dt, "Pressing earliest start")
+        SharedHelpers.RequireColumn(dt, "Pressing Due date")           ' (fixes earlier mismatch)
+        SharedHelpers.RequireColumn(dt, "Wheel Dia")
+        SharedHelpers.RequireColumn(dt, "Wheel thickness")
+        SharedHelpers.RequireColumn(dt, "Cycle Type")
+
+        ' ---- Date boundaries used for tiering ----
+        Dim today As DateTime = currentDate.Date
+        Dim approachCutoff As DateTime = today.AddDays(approachingDays)
+
+        Dim candidates As New List(Of Candidate)()
+
+        ' ---- Extract candidates from table rows ----
+        For Each r As DataRow In dt.Rows
+
+            ' 1) Filter: only pressing operation (typically 200)
+            Dim opNo As Integer = SharedHelpers.SafeInt(r("Operation Number"))
+            If opNo <> 200 Then Continue For
+
+            ' 2) Filter: STRICT UNSCHEDULED only
+            ' is_scheduled is expected to be reliably boolean-like based on your confirmation.
+            Dim isScheduled As Boolean = SharedHelpers.SafeBool(r("is_scheduled"))
+            If isScheduled Then Continue For
+
+            ' 3) Queue key: parent_record must be valid
+            Dim parentRec As Integer = SharedHelpers.SafeInt(r("parent_record"))
+            If parentRec <= 0 Then Continue For
+
+            ' 4) Read pressing dates (date-only logic)
+            Dim earliest As DateTime = SharedHelpers.SafeDate(r("Pressing earliest start")).Date
+            Dim due As DateTime = SharedHelpers.SafeDate(r("Pressing Due date")).Date
+
+            ' Treat missing/parse-failed dates as MinValue (consistent with your existing SafeDate behavior)
+            Dim missingEarliest As Boolean = (earliest = DateTime.MinValue)
+            Dim missingDue As Boolean = (due = DateTime.MinValue)
+
+            ' 5) Tiering logic:
+            ' Tier 0: approaching soon and not late (Earliest <= cutoff AND Due >= today)
+            ' Tier 1: already late (Due < today)
+            ' Tier 2: everything else (includes missing values)
+            Dim tier As Integer
+            If Not missingEarliest AndAlso Not missingDue AndAlso earliest <= approachCutoff AndAlso due >= today Then
+                tier = 0
+            ElseIf Not missingDue AndAlso due < today Then
+                tier = 1
+            Else
+                tier = 2
+            End If
+
+            ' 6) Read batching/type attributes
+            Dim wheelDia As String = SharedHelpers.SafeStr(r("Wheel Dia")).Trim()
+            Dim wheelPin As String = SharedHelpers.SafeStr(r("Wheel thickness")).Trim()
+            Dim cycleType As String = SharedHelpers.SafeStr(r("Cycle Type")).Trim()
+
+            ' CycleRank currently uses GetCycleRank() (hardcoded list).
+            ' Later you can replace this call with a dictionary/map lookup.
+            Dim cycleRank As Integer = GetCycleRank(cycleType)
+
+
+            candidates.Add(New Candidate With {
+            .ParentRecord = parentRec,
+            .Earliest = earliest,
+            .Due = due,
+            .Tier = tier,
+            .WheelDia = wheelDia,
+            .WheelPin = wheelPin,
+            .TypeKey = wheelDia & "|" & wheelPin,
+            .CycleRank = cycleRank,
+            .MissingEarliest = missingEarliest,
+            .MissingDue = missingDue
+        })
+        Next
+
+        ' ---- Sorting: the exact queue priority order ----
+        ' 1) Tier asc (0,1,2)
+        ' 2) Due asc (missing due goes last)
+        ' 3) Earliest asc (missing earliest goes last)
+        ' 4) CycleRank desc (higher rank first)
+        ' 5) TypeKey asc (clusters same Dia|Thickness)
+        ' 6) ParentRecord asc (stable tie-breaker)
+        Dim sorted As List(Of Candidate) =
+        candidates.OrderBy(Function(c) c.Tier) _
+                  .ThenBy(Function(c) If(c.MissingDue, DateTime.MaxValue, c.Due)) _
+                  .ThenBy(Function(c) If(c.MissingEarliest, DateTime.MaxValue, c.Earliest)) _
+                  .ThenByDescending(Function(c) c.CycleRank) _
+                  .ThenBy(Function(c) c.TypeKey) _
+                  .ThenBy(Function(c) c.ParentRecord) _
+                  .ToList()
+
+        ' ---- Soft batching: greedy pull-forward of same Tier + TypeKey + Due ----
+        Dim batched As List(Of Candidate) = GreedyTypeBatchingWithinTier(sorted, lookahead:=50)
+
+        ' ---- Output: return parent_record list (distinct to be safe) ----
+        Return batched.Select(Function(c) c.ParentRecord).Distinct().ToList()
+    End Function
+
+    ' ----------------------
+    ' Greedy batching (unchanged logic, but now works on ParentRecord candidates)
+    ' Pull-forward rules:
+    '   - same Tier
+    '   - same TypeKey (WheelDia|WheelThickness)
+    '   - same Due date
+    ' This is a "soft clustering" step; it does NOT change tier ordering.
+    ' ----------------------
+    Private Function GreedyTypeBatchingWithinTier(sorted As List(Of Candidate),
+                                             Optional lookahead As Integer = 50) As List(Of Candidate)
+
+        If sorted Is Nothing OrElse sorted.Count <= 2 Then Return If(sorted, New List(Of Candidate)())
+
+        Dim work As New List(Of Candidate)(sorted)
+        Dim result As New List(Of Candidate)(work.Count)
+
+        Dim i As Integer = 0
+        While i < work.Count
+            Dim cur As Candidate = work(i)
+            result.Add(cur)
+
+            ' Only attempt pull-forward if TypeKey is meaningful
+            If Not String.IsNullOrEmpty(cur.TypeKey) Then
+                Dim pulled As Integer = 0
+                Dim j As Integer = i + 1
+
+                ' Scan forward but stop after lookahead pulls
+                While j < work.Count AndAlso pulled < lookahead
+
+                    ' Match only within same tier, same type, same due date
+                    If work(j).Tier = cur.Tier AndAlso
+                   work(j).TypeKey = cur.TypeKey AndAlso
+                   work(j).Due = cur.Due Then
+
+                        result.Add(work(j))
+                        work.RemoveAt(j)     ' remove from work list so it doesn’t appear again later
+                        pulled += 1
+                        Continue While       ' keep scanning from same j index (since list shifted)
+                    End If
+
+                    j += 1
+                End While
+            End If
+
+            i += 1
+        End While
+
+        Return result
+    End Function
+
+    ' ----------------------
+    ' Cycle ranking (PRESSING ONLY)
+    ' Current version: hardcoded fallback list.
+    ' Next step (per your requirement): replace this with a rank map (e.g., Dictionary loaded from CSV).
+    ' ----------------------
+    Private Function GetCycleRank(cycleType As String) As Integer
+        If String.IsNullOrWhiteSpace(cycleType) Then Return 0
+
+        Select Case cycleType.Trim().ToUpperInvariant()
+            Case "150VT" : Return 3
+            Case "102VT" : Return 2
+            Case "65VT" : Return 1
+            Case Else : Return 0
+        End Select
+    End Function
 
 
 End Class

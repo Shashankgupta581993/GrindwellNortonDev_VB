@@ -11,6 +11,7 @@ Imports System.Runtime.InteropServices
 Imports System.Security
 Imports System.Text
 Imports System.Windows.Forms
+Imports Microsoft.VisualBasic.FileIO
 Imports Preactor
 Imports Preactor.Interop.PreactorObject
 
@@ -256,6 +257,103 @@ Public Class AlgoSeq2
         End While
 
         Return 0
+    End Function
+
+    ' Reads a CSV file into a DataTable with flexible columns and safe value handling.
+    ' If the file has headers, they are used and de-duplicated; otherwise columns are auto-generated.
+    Public Function ReadCsvFlexible(filePath As String,
+                                    Optional delimiter As Char = ","c,
+                                    Optional hasHeader As Boolean = True,
+                                    Optional encoding As Encoding = Nothing,
+                                    Optional skipMalformedLines As Boolean = True) As DataTable
+
+        If String.IsNullOrWhiteSpace(filePath) Then
+            Throw New ArgumentException("filePath is required.", NameOf(filePath))
+        End If
+
+        If encoding Is Nothing Then
+            encoding = Encoding.UTF8
+        End If
+
+        Dim dt As New DataTable(Path.GetFileNameWithoutExtension(filePath))
+
+        Using parser As New TextFieldParser(filePath, encoding)
+            parser.SetDelimiters(delimiter.ToString())
+            parser.HasFieldsEnclosedInQuotes = True
+            parser.TrimWhiteSpace = True
+
+            Dim isFirstRow As Boolean = True
+            While Not parser.EndOfData
+                Dim fields As String() = Nothing
+                Try
+                    fields = parser.ReadFields()
+                Catch ex As MalformedLineException
+                    If skipMalformedLines Then
+                        Continue While
+                    End If
+                    Throw
+                End Try
+
+                If fields Is Nothing Then
+                    Continue While
+                End If
+
+                If isFirstRow AndAlso hasHeader Then
+                    Dim headerNames As List(Of String) = BuildHeaderNames(fields)
+                    For Each name As String In headerNames
+                        dt.Columns.Add(name, GetType(String))
+                    Next
+                    isFirstRow = False
+                    Continue While
+                End If
+
+                If isFirstRow Then
+                    EnsureColumns(dt, fields.Length)
+                    isFirstRow = False
+                Else
+                    EnsureColumns(dt, fields.Length)
+                End If
+
+                Dim row As DataRow = dt.NewRow()
+                For i As Integer = 0 To fields.Length - 1
+                    row(i) = If(fields(i), String.Empty)
+                Next
+                dt.Rows.Add(row)
+            End While
+        End Using
+
+        Return dt
+    End Function
+
+    Private Sub EnsureColumns(dt As DataTable, requiredCount As Integer)
+        While dt.Columns.Count < requiredCount
+            Dim colName As String = "Column" & (dt.Columns.Count + 1).ToString(CultureInfo.InvariantCulture)
+            dt.Columns.Add(colName, GetType(String))
+        End While
+    End Sub
+
+    Private Function BuildHeaderNames(headers As String()) As List(Of String)
+        Dim names As New List(Of String)(headers.Length)
+        Dim seen As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+
+        For i As Integer = 0 To headers.Length - 1
+            Dim baseName As String = If(headers(i), String.Empty).Trim()
+            If baseName.Length = 0 Then
+                baseName = "Column" & (i + 1).ToString(CultureInfo.InvariantCulture)
+            End If
+
+            Dim finalName As String = baseName
+            If seen.ContainsKey(baseName) Then
+                seen(baseName) += 1
+                finalName = baseName & "_" & seen(baseName).ToString(CultureInfo.InvariantCulture)
+            Else
+                seen(baseName) = 1
+            End If
+
+            names.Add(finalName)
+        Next
+
+        Return names
     End Function
 
     ' Exports a DataTable to a CSV file in the local directory as "DataTableExport.csv".
