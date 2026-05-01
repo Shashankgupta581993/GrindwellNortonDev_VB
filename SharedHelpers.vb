@@ -189,9 +189,11 @@ Public Module SharedHelpers
     Public Function readOrderTable(ByVal preactor As IPreactor) As DataTable
 
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
-
-
         Dim dt As DataTable = BuildRoutingSchema()
+
+        ' 1. Suspend indexing, events, and constraints for bulk insert performance
+        dt.BeginLoadData()
+
         Dim ordersTable = preactor.GetFormatNumber("Orders")
         Dim orderNo = preactor.GetFieldNumber(ordersTable, "Order No.")
         Dim partNo = preactor.GetFieldNumber(ordersTable, "Part No.")
@@ -224,6 +226,11 @@ Public Module SharedHelpers
         Dim rowCount = preactor.RecordCount(ordersTable)
         For rec As Integer = 1 To rowCount
             Dim r As DataRow = dt.NewRow()
+
+            ' 2. Cache values used multiple times to avoid redundant API reads
+            Dim currentOpNo As Integer = preactor.ReadFieldInt(ordersTable, opNo, rec)
+            Dim isScheduled As Boolean = planningboard.IsOperationScheduled(rec)
+
             r("OrdersID") = rec
             r("Order No") = preactor.ReadFieldString(ordersTable, orderNo, rec)
             r("Part Number") = preactor.ReadFieldString(ordersTable, partNo, rec)
@@ -257,30 +264,31 @@ Public Module SharedHelpers
             'r("Constraint Qty") = preactor.ReadFieldInt(ordersTable, Qty, rec)
             'r("firing earliest start date") = preactor.ReadFieldInt(ordersTable, Qty, rec)
             r("firing due date") = preactor.ReadFieldDateTime(ordersTable, firingDue, rec)
-            If planningboard.IsOperationScheduled(rec) Then
+
+            ' 3. Streamlined scheduling assignment
+            r("is_scheduled") = isScheduled
+            If isScheduled Then
                 r("scheduled_start_time") = preactor.ReadFieldDateTime(ordersTable, schStart, rec)
                 r("scheduled_end_time") = preactor.ReadFieldDateTime(ordersTable, schEnd, rec)
-                r("is_scheduled") = True
-            Else
-                r("is_scheduled") = False
             End If
+
+            ' 4. Consolidated rec > 1 logic & short-circuit evaluation
             If rec > 1 Then
                 r("parent_record") = preactor.FindMatchingRecord(ordersTable, 1, rec, -1, SearchDirection.Backwards)
-            Else r("parent_record") = 1
-            End If
-            If rec > 1 Then
-                If preactor.ReadFieldInt(ordersTable, opNo, rec) = 300 Then
-                    If planningboard.IsOperationScheduled(rec - 1) Then
-                        r("prev_op_is_scheduled") = True
-                    ElseIf planningboard.IsOperationScheduled(rec - 2) Then
+
+                If currentOpNo = 300 Then
+                    ' OrElse prevents the second check from running if the first is True
+                    If planningboard.IsOperationScheduled(rec - 1) OrElse planningboard.IsOperationScheduled(rec - 2) Then
                         r("prev_op_is_scheduled") = True
                     End If
                 End If
+            Else
+                r("parent_record") = 1
             End If
 
             dt.Rows.Add(r)
         Next
-
+        dt.EndLoadData()
         Return dt
     End Function
 
