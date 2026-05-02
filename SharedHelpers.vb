@@ -276,12 +276,20 @@ Public Module SharedHelpers
             If rec > 1 Then
                 r("parent_record") = preactor.FindMatchingRecord(ordersTable, 1, rec, -1, SearchDirection.Backwards)
 
-                If currentOpNo = 300 Then
-                    ' OrElse prevents the second check from running if the first is True
-                    If planningboard.IsOperationScheduled(rec - 1) OrElse planningboard.IsOperationScheduled(rec - 2) Then
-                        r("prev_op_is_scheduled") = True
+                Dim prevOpRec As Integer = 0
+
+                Try
+                    prevOpRec = planningboard.GetPreviousOperation(rec, 1)
+
+                    If prevOpRec > 0 Then
+                        r("prev_op_is_scheduled") = planningboard.IsOperationScheduled(prevOpRec)
                     End If
-                End If
+
+                Catch ex As Exception
+                    ' Keep default False if previous-operation lookup fails.
+                    ' Optional: add logging later.
+                    r("prev_op_is_scheduled") = False
+                End Try
             Else
                 r("parent_record") = 1
             End If

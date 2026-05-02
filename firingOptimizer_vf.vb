@@ -375,6 +375,8 @@ Public Class firingOptimizer_vf
         '         last pre-290 op completion as ReadyTime.
         ' -----------------------------------------------------------------
         Dim hasPrevCol As Boolean = dt.Columns.Contains(COL_PREVOP_IS_SCH)
+        ' Adding this here since FindMaxLoadingMins also scans dt and we want to avoid repeated scans – build a lookup of max loading mins by order
+        Dim loadingMinsByOrder As Dictionary(Of String, Integer) = BuildLoadingMinsByOrder(dt)
 
         For Each r As DataRow In dt.Rows
 
@@ -410,8 +412,12 @@ Public Class firingOptimizer_vf
             Dim firingDue As DateTime = ParseDueAsEndOfDay(r(COL_FIRING_DUE))
             If firingDue = DateTime.MinValue Then Continue For
 
-            Dim loadMins As Integer = FindMaxLoadingMins(dt, orderNo)
-            If loadMins < 0 Then Continue For
+            Dim loadMins As Integer = 0
+            If Not loadingMinsByOrder.TryGetValue(orderNo, loadMins) Then
+                Continue For
+            End If
+            'Dim loadMins As Integer = FindMaxLoadingMins(dt, orderNo)
+            'If loadMins < 0 Then Continue For
 
             Dim firingOpRec As Integer = SafeInt(r(COL_OPREC))
             If firingOpRec <= 0 Then Continue For
@@ -1490,6 +1496,32 @@ Public Class firingOptimizer_vf
         End Using
 
     End Sub
+    Private Function BuildLoadingMinsByOrder(dt As DataTable) As Dictionary(Of String, Integer)
 
+        Dim result As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+
+        For Each r As DataRow In dt.Rows
+
+            Dim opNo As Integer = SafeInt(r(COL_OPNO))
+            If opNo <> 290 AndAlso opNo <> 291 Then Continue For
+
+            Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
+            If orderNo = "" Then Continue For
+
+            Dim mins As Integer = CInt(Math.Truncate(SafeDbl(r(COL_BATCHTIME))))
+            If mins < 0 Then Continue For
+
+            Dim existing As Integer = -1
+            If result.TryGetValue(orderNo, existing) Then
+                If mins > existing Then result(orderNo) = mins
+            Else
+                result(orderNo) = mins
+            End If
+
+        Next
+
+        Return result
+
+    End Function
 
 End Class
