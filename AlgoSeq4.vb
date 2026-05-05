@@ -61,10 +61,15 @@ Public Class AlgoSeq4
         End If
 
         ' Then call your normal BuildBatchKilnPlan + ExportPlanToCsv as before
-        Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc,
+        Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "C:\Users\Public\Documents\Opcenter APS Configurations\SC Ultimate v2510\kilndata.csv", currentDate, minOcc, maxOcc,
                                         allowUnderfilledTail:=True,
                                         batchStartDelayMins:=60,
                                         maxBatchesPerDayGlobal:=2)
+        '        Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc,
+        '                                        allowUnderfilledTail:=True,
+        '                                        batchStartDelayMins:=60,
+        '                                        maxBatchesPerDayGlobal:=2)
+
 
         ' Debugger
         If enableDebugExport Then
@@ -193,22 +198,85 @@ Public Class AlgoSeq4
             If recOpNo <> 260 Then Continue For
             nxtrecOpNo = preactor.ReadFieldInt(ordersTable, opNoField, planningboard.GetNextOperation(i, 1))
             If nxtrecOpNo <> 290 Then Continue For
-            If planningboard.GetOperationTimes(i + 1).Value.OperationTimes.ProcessStart < currentDate Then Continue For
-            times = planningboard.BackTestOpOnResource(i, DRYER, planningboard.GetOperationTimes(i + 1).Value.OperationTimes.ProcessStart)
-            planningboard.PutOperationOnResource(i, DRYER, times.Value.ProcessStart)
+            Try
+                If planningboard.GetOperationTimes(i + 1).Value.OperationTimes.ProcessStart < currentDate Then Continue For
+                times = planningboard.BackTestOpOnResource(i, DRYER, planningboard.GetOperationTimes(i + 1).Value.OperationTimes.ProcessStart)
+                planningboard.PutOperationOnResource(i, DRYER, times.Value.ProcessStart)
+            Catch ex As Exception
+            End Try
         Next
 
         Dim times2 As DateTime
         Dim oprec As Integer = 1
         For i As Integer = 1 To reccount
-            If preactor.ReadFieldInt(ordersTable, opNoField, i) <> 200 Then Continue For
-            oprec = planningboard.GetPreviousOperation(i, 1)
-            times2 = planningboard.GetOperationTimes(i).Value.OperationTimes.ProcessStart
-            If times2 < currentDate Then Continue For
-            While (oprec > 0)
-                planningboard.PutOperationOnResource(oprec, 1, times2.AddDays(-1))
-                oprec = planningboard.GetPreviousOperation(oprec, 1)
-            End While
+            Try
+                If preactor.ReadFieldInt(ordersTable, opNoField, i) <> 200 Then Continue For
+                oprec = planningboard.GetPreviousOperation(i, 1)
+                times2 = planningboard.GetOperationTimes(i).Value.OperationTimes.ProcessStart
+                If times2 < currentDate Then Continue For
+                While (oprec > 0)
+                    planningboard.PutOperationOnResource(oprec, 1, times2.AddDays(-1))
+                    oprec = planningboard.GetPreviousOperation(oprec, 1)
+                End While
+            Catch ex As Exception
+
+            End Try
+        Next
+
+        Return 0
+    End Function
+
+    Public Function FiringOnwards(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+
+        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
+        Dim routingDt As DataTable = readOrderTable(preactor)
+        Dim currentDate As DateTime = planningboard.TerminatorTime
+        Dim DRYER As Integer = planningboard.GetResourceNumber("DRYER")
+        Dim times As OperationTimes?
+
+
+
+        ' where ever the start time of op 290 is > that terminator time
+        ' find start time of op 290 for every eligible order
+        ' find the dryer operation (rec-2)
+        ' testoperationbackward from start time of op 290 -> start time of dryer
+        ' putoperation on resource at the testoperation.process start
+
+        Dim reccount = preactor.RecordCount(ordersTable)
+        Dim recOpNo As Integer
+        Dim nxtrecOpNo As Integer
+        For i As Integer = 1 To reccount
+            recOpNo = preactor.ReadFieldInt(ordersTable, opNoField, i)
+            'for DRYER fix
+            If recOpNo <> 260 Then Continue For
+            nxtrecOpNo = preactor.ReadFieldInt(ordersTable, opNoField, planningboard.GetNextOperation(i, 1))
+            If nxtrecOpNo <> 290 Then Continue For
+            Try
+                If planningboard.GetOperationTimes(i + 1).Value.OperationTimes.ProcessStart < currentDate Then Continue For
+                times = planningboard.BackTestOpOnResource(i, DRYER, planningboard.GetOperationTimes(i + 1).Value.OperationTimes.ProcessStart)
+                planningboard.PutOperationOnResource(i, DRYER, times.Value.ProcessStart)
+            Catch ex As Exception
+            End Try
+        Next
+
+        Dim times2 As DateTime
+        Dim oprec As Integer = 1
+        For i As Integer = 1 To reccount
+            Try
+                If preactor.ReadFieldInt(ordersTable, opNoField, i) <> 200 Then Continue For
+                oprec = planningboard.GetPreviousOperation(i, 1)
+                times2 = planningboard.GetOperationTimes(i).Value.OperationTimes.ProcessStart
+                If times2 < currentDate Then Continue For
+                While (oprec > 0)
+                    planningboard.PutOperationOnResource(oprec, 1, times2.AddDays(-1))
+                    oprec = planningboard.GetPreviousOperation(oprec, 1)
+                End While
+            Catch ex As Exception
+
+            End Try
         Next
 
         Return 0
