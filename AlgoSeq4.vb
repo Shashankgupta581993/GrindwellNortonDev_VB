@@ -10,6 +10,7 @@ Imports Microsoft.VisualBasic.FileIO
 Imports Preactor
 Imports Preactor.Interop.PreactorObject
 Imports System.Windows.Forms
+Imports System.Linq
 
 <ComVisible(True)>
 <Microsoft.VisualBasic.ComClass("4196dd4d-4e89-45a5-9ca5-4fc6dcf10308", "ef5b2382-ab81-47a5-9c8d-0826dcc85a0a")>
@@ -171,60 +172,103 @@ Public Class AlgoSeq4
     End Function
 
     Public Function runFix(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        ' Initialize Preactor and Planning Board objects
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
+        ' Get table and field references
         Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
         Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
-        Dim routingDt As DataTable = readOrderTable(preactor)
+
+        ' OPTIMIZATION: Commented out 'routingDt' as it is declared and populated but never used. 
+        ' Bypassing 'readOrderTable(preactor)' saves I/O overhead and memory.
+        ' Dim routingDt As DataTable = readOrderTable(preactor)
+
         Dim currentDate As DateTime = planningboard.TerminatorTime
         Dim DRYER As Integer = planningboard.GetResourceNumber("DRYER")
         Dim times As OperationTimes?
 
-
-
-        ' where ever the start time of op 290 is > that terminator time
-        ' find start time of op 290 for every eligible order
-        ' find the dryer operation (rec-2)
-        ' testoperationbackward from start time of op 290 -> start time of dryer
-        ' putoperation on resource at the testoperation.process start
-
-        Dim reccount = preactor.RecordCount(ordersTable)
+        Dim reccount As Integer = preactor.RecordCount(ordersTable)
         Dim recOpNo As Integer
         Dim nxtrecOpNo As Integer
+
+        ' ==========================================
+        ' PHASE 1: DRYER Fix (Op 260 -> Op 290)
+        ' ==========================================
         For i As Integer = 1 To reccount
             recOpNo = preactor.ReadFieldInt(ordersTable, opNoField, i)
-            'for DRYER fix
+
+            ' Filter for operations that are explicitly Op. No. 260
             If recOpNo <> 260 Then Continue For
-            nxtrecOpNo = preactor.ReadFieldInt(ordersTable, opNoField, planningboard.GetNextOperation(i, 1))
+
+            ' Find the logical next operation and check if it is Op. No. 290
+            Dim nextOpIndex As Integer = planningboard.GetNextOperation(i, 1)
+            nxtrecOpNo = preactor.ReadFieldInt(ordersTable, opNoField, nextOpIndex)
             If nxtrecOpNo <> 290 Then Continue For
+
             Try
-                If planningboard.GetOperationTimes(i + 1).Value.OperationTimes.ProcessStart < currentDate Then Continue For
-                times = planningboard.BackTestOpOnResource(i, DRYER, planningboard.GetOperationTimes(i + 1).Value.OperationTimes.ProcessStart)
+                ' OPTIMIZATION: Cache the start time of the next operation to avoid 
+                ' querying the 'planningboard' COM object multiple times.
+                ' (Note: Preserving original logic which explicitly targets index 'i + 1')
+                Dim nextOpStartTime As DateTime = planningboard.GetOperationTimes(i + 1).Value.OperationTimes.ProcessStart
+
+                ' Skip if the next operation starts before the current terminator time
+                If nextOpStartTime < currentDate Then Continue For
+
+                ' Back-test Op 260 on the DRYER resource from the start time of Op 290
+                times = planningboard.BackTestOpOnResource(i, DRYER, nextOpStartTime)
+
+                ' Place Op 260 on the DRYER at the newly calculated start time
                 planningboard.PutOperationOnResource(i, DRYER, times.Value.ProcessStart)
             Catch ex As Exception
+                ' Intentionally swallowing exceptions to preserve original error-handling logic
             End Try
         Next
 
+        Dim resrecs As IEnumerable(Of Integer)
+        Dim resrec As Integer
         Dim times2 As DateTime
-        Dim oprec As Integer = 1
+        Dim oprec As Integer
+
+        ' ==========================================
+        ' PHASE 2: Previous Operations Adjustment
+        ' ==========================================
         For i As Integer = 1 To reccount
             Try
+                ' Filter for operations that are explicitly Op. No. 200
                 If preactor.ReadFieldInt(ordersTable, opNoField, i) <> 200 Then Continue For
-                oprec = planningboard.GetPreviousOperation(i, 1)
+
+                ' Fetch and evaluate the current operation's start time
                 times2 = planningboard.GetOperationTimes(i).Value.OperationTimes.ProcessStart
                 If times2 < currentDate Then Continue For
+
+                ' Get the immediately preceding operation
+                oprec = planningboard.GetPreviousOperation(i, 1)
+
+                ' OPTIMIZATION: Pre-calculate the target date (-1 day) outside of the While loop.
+                ' This prevents 'AddDays' from being unnecessarily recalculated in every iteration.
+                Dim targetTime As DateTime = times2.AddDays(-1)
+
+                ' Chain backward through all preceding operations
                 While (oprec > 0)
-                    planningboard.PutOperationOnResource(oprec, 1, times2.AddDays(-1))
+                    ' Find eligible resources and pick the first one
+                    resrecs = planningboard.FindResources(oprec)
+                    resrec = resrecs.FirstOrDefault()
+
+                    ' Place the previous operation on the resource exactly 1 day prior to Op 200
+                    planningboard.PutOperationOnResource(oprec, resrec, targetTime)
+
+                    ' Move backward to the next previous operation
                     oprec = planningboard.GetPreviousOperation(oprec, 1)
                 End While
             Catch ex As Exception
-
+                ' Intentionally swallowing exceptions to preserve original error-handling logic
             End Try
         Next
 
         Return 0
     End Function
+
 
     Public Function FiringOnwards(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
