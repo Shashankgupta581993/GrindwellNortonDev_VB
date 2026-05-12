@@ -42,7 +42,8 @@ Public Class AlgoSeq4
         Dim RKLN As Integer = planningboard.GetResourceNumber("RKLN")
         Dim NKLN As Integer = planningboard.GetResourceNumber("NKLN")
         Dim LOADBICK As Integer = planningboard.GetResourceNumber("LOADBICK")
-
+        Dim ULDBICK As Integer = planningboard.GetResourceNumber("ULDBICK")
+        Dim PREINSPC As Integer = planningboard.GetResourceNumber("PREINSPC")
 
 
         ' Build firing plan using firing optimizer (external class)
@@ -62,14 +63,14 @@ Public Class AlgoSeq4
         End If
 
         ' Then call your normal BuildBatchKilnPlan + ExportPlanToCsv as before
-        Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "C:\Users\Public\Documents\Opcenter APS Configurations\SC Ultimate v2510\kilndata.csv", currentDate, minOcc, maxOcc,
-                                        allowUnderfilledTail:=True,
-                                        batchStartDelayMins:=60,
-                                        maxBatchesPerDayGlobal:=2)
-        '        Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc,
-        '                                        allowUnderfilledTail:=True,
-        '                                        batchStartDelayMins:=60,
-        '                                        maxBatchesPerDayGlobal:=2)
+        'Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "C:\Users\Public\Documents\Opcenter APS Configurations\SC Ultimate v2510\kilndata.csv", currentDate, minOcc, maxOcc,
+        'allowUnderfilledTail:=True,
+        'batchStartDelayMins:=60,
+        'maxBatchesPerDayGlobal:=2)
+        Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc,
+                                                allowUnderfilledTail:=True,
+                                                batchStartDelayMins:=60,
+                                                maxBatchesPerDayGlobal:=2)
 
 
         ' Debugger
@@ -92,6 +93,7 @@ Public Class AlgoSeq4
                 Case "AKLN"
                     planningboard.PutOperationOnResource(firingOpRec, AKLN, batchStart)
                     planningboard.PutOperationOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, planningboard.BackTestOpOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, batchStart).Value.ProcessStart)
+                    planningboard.PutOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, planningboard.TestOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, batchEnd).Value.ProcessStart)
 
                 Case "BKLN"
                     planningboard.PutOperationOnResource(firingOpRec, BKLN, batchStart)
@@ -519,7 +521,7 @@ Public Class AlgoSeq4
                         planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
                         Try
                             planningboard.PutOperationOnResource(planningboard.GetPreviousOperation(opRec, 1), bestResRec, bestOpTimes.Value.ChangeStart.AddDays(-1))
-                            planningboard.PutOperationOnResource(planningboard.GetPreviousOperation(planningboard.GetPreviousOperation(opRec, 1), 1), bestResRec, bestOpTimes.Value.ChangeStart.AddDays(-1))
+                            'planningboard.PutOperationOnResource(planningboard.GetPreviousOperation(planningboard.GetPreviousOperation(opRec, 1), 1), bestResRec, bestOpTimes.Value.ChangeStart.AddDays(-1))
                         Catch ex As Exception
 
                         End Try

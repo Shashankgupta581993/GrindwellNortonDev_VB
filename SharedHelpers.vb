@@ -233,19 +233,19 @@ Public Module SharedHelpers
 
             r("OrdersID") = rec
             r("Order No") = preactor.ReadFieldString(ordersTable, orderNo, rec)
-            r("Part Number") = preactor.ReadFieldString(ordersTable, partNo, rec)
-            r("Part Name") = preactor.ReadFieldString(ordersTable, product, rec)
+            'r("Part Number") = preactor.ReadFieldString(ordersTable, partNo, rec)
+            'r("Part Name") = preactor.ReadFieldString(ordersTable, product, rec)
             r("Operation Number") = preactor.ReadFieldInt(ordersTable, opNo, rec)
             r("Operation Name") = preactor.ReadFieldString(ordersTable, opName, rec)
             r("Resource Group") = preactor.ReadFieldString(ordersTable, resGroup, rec)
             r("Required Resource") = preactor.ReadFieldString(ordersTable, res, rec)
-            r("Setup Time") = preactor.ReadFieldDouble(ordersTable, stpTime, rec) * 1440
+            'r("Setup Time") = preactor.ReadFieldDouble(ordersTable, stpTime, rec) * 1440
             'r("Time Per Item")
             'r("Sales Order")
             r("Quantity") = preactor.ReadFieldInt(ordersTable, Qty, rec)
             r("Due Date") = preactor.ReadFieldDateTime(ordersTable, dueDate, rec)
             r("Batch Time") = preactor.ReadFieldDouble(ordersTable, batchTime, rec) * 1440
-            r("Process Time Type") = preactor.ReadFieldString(ordersTable, prsTimeType, rec)
+            'r("Process Time Type") = preactor.ReadFieldString(ordersTable, prsTimeType, rec)
             r("Tonnage") = preactor.ReadFieldInt(ordersTable, Qty, rec)
             r("Cycle Type") = preactor.ReadFieldString(ordersTable, cycleType, rec)
             r("Volume Occupancy") = preactor.ReadFieldDouble(ordersTable, volumeOcc, rec)
