@@ -98,23 +98,28 @@ Public Class AlgoSeq4
                 Case "BKLN"
                     planningboard.PutOperationOnResource(firingOpRec, BKLN, batchStart)
                     planningboard.PutOperationOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, planningboard.BackTestOpOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, batchStart).Value.ProcessStart)
+                    planningboard.PutOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, planningboard.TestOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, batchEnd).Value.ProcessStart)
+
 
                 Case "CKLN"
                     planningboard.PutOperationOnResource(firingOpRec, CKLN, batchStart)
                     planningboard.PutOperationOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, planningboard.BackTestOpOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, batchStart).Value.ProcessStart)
+                    planningboard.PutOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, planningboard.TestOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, batchEnd).Value.ProcessStart)
 
                 Case "DKLN"
                     planningboard.PutOperationOnResource(firingOpRec, DKLN, batchStart)
                     planningboard.PutOperationOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, planningboard.BackTestOpOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, batchStart).Value.ProcessStart)
+                    planningboard.PutOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, planningboard.TestOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, batchEnd).Value.ProcessStart)
 
                 Case "RKLN"
                     planningboard.PutOperationOnResource(firingOpRec, RKLN, batchStart)
                     planningboard.PutOperationOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, planningboard.BackTestOpOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, batchStart).Value.ProcessStart)
-                    ' planningboard.PutOperationOnResource(firingOpRec - 1, LOADBICK, planningboard.BackTestOpOnResource(firingOpRec - 1, LOADBICK, batchStart).Value.ProcessStart)
+                    planningboard.PutOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, planningboard.TestOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, batchEnd).Value.ProcessStart)
 
                 Case "NKLN"
                     planningboard.PutOperationOnResource(firingOpRec, NKLN, batchStart)
                     planningboard.PutOperationOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, planningboard.BackTestOpOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, batchStart).Value.ProcessStart)
+                    planningboard.PutOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, planningboard.TestOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, batchEnd).Value.ProcessStart)
 
             End Select
         Next
@@ -143,8 +148,10 @@ Public Class AlgoSeq4
         ' Parameters you will provide
         Dim totalCartsAvailable As Integer = 28
         Dim cartsPerDay As Double = 4.5
-        Dim dryingToFiringBufferHours As Double = 4.0
+        Dim dryingToFiringBufferHours As Double = 6.0
         Dim TCBK As Integer = planningboard.GetResourceNumber("TCBK")
+        Dim LOADPTK As Integer = planningboard.GetResourceNumber("LOADPTK")
+        Dim BATCHTIME As Integer = preactor.GetFieldNumber(ordersTable, "Batch Time")
 
         Dim tunnelObj As New tunnelOptimizer_vf
 
@@ -166,8 +173,11 @@ Public Class AlgoSeq4
 
             Dim cartNo As Integer = plan.CartNoByFiringOpRec(firingOpRec)
             Dim batchstart As DateTime = plan.StartByFiringOpRec(firingOpRec)
-            preactor.WriteField(ordersTable, 108, firingOpRec, 28 / 4.5)
-            planningboard.PutOperationOnResource(firingOpRec, TCBK, batchstart)
+            preactor.WriteField(ordersTable, BATCHTIME, firingOpRec, 28 / 4.5)
+            planningboard.PutOperationOnResource(firingOpRec, TCBK, batchstart.AddDays(1))
+            Dim PrevOprec As Integer = planningboard.GetPreviousOperation(firingOpRec, 1)
+            Dim PrevOpRecStart As DateTime = planningboard.BackTestOpOnResource(PrevOprec, LOADPTK, batchstart.AddDays(1)).Value.ProcessStart
+            planningboard.PutOperationOnResource(PrevOprec, LOADPTK, PrevOpRecStart)
 
         Next
         Return 0
