@@ -343,33 +343,24 @@ Public Class AlgoSeq4
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
-        Dim times As Preactor.CalendarState? = planningboard.GetCurrentCalendarState(planningboard.GetResourceNumber("PL06001A"), planningboard.TerminatorTime)
+        'preactor.CreateRecord(114)
+        'Dim lastRec As Integer = preactor.RecordCount(114)
+        'preactor.WriteField(114, "Order No.", lastRec, "Aggregate Record 1")
+        'preactor.WriteField(114, "Aggregate Record", lastRec, True)
+        'Dim x As Integer = 1
+        'preactor.SetAutoListSize("Orders", "Members", lastRec, 1)
+        'preactor.WriteMatrixField("Orders", "Members", lastRec, 1, 1, 1)
 
-        preactor.CreateRecord(114)
-        Dim lastRec As Integer = preactor.RecordCount(114)
-        preactor.WriteField(114, "Order No.", lastRec, "Aggregate Record 1")
-        preactor.WriteField(114, "Aggregate Record", lastRec, True)
-        Dim x As Integer = 1
-        preactor.SetAutoListSize("Orders", "Members", lastRec, 1)
-        preactor.WriteMatrixField("Orders", "Members", lastRec, 1, 1, 1)
+        Try
+            ' ... your normal rule setup here ...
 
+            ShowExplorerUI()   ' <-- call this when you want the UI
 
-
-        'preactor.WriteMatrixField(114, "Members", lastRec, )
-        'preactor.WriteListField(formatNumber:=114, fieldName:="Members", record:=lastRec, value:="120810087 - 300 (FIRING/BAKING, Bickley Batch Kilns)", x:=0)
-        '120810087 - 300 (FIRING/BAKING, Bickley Batch Kilns)
-        '120810087 - 300 (FIRING/BAKING, Bickley Batch Kilns)
-        'Try
-        '    ' ... your normal rule setup here ...
-
-        '    ShowExplorerUI()   ' <-- call this when you want the UI
-
-        '    Return 0
-        'Catch ex As Exception
-        '    ' log ex.Message somewhere
-        '    Return -1
-        'End Try
-        preactor.Redraw()
+            Return 0
+        Catch ex As Exception
+            ' log ex.Message somewhere
+            Return -1
+        End Try
         Return 0
     End Function
     Public Function Test(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
@@ -553,124 +544,6 @@ Public Class AlgoSeq4
         Return 0
     End Function
 
-    'Public Function runPressToFiring(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
-    '    Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
-    '    Dim planningboard As IPlanningBoard = preactor.PlanningBoard
-
-    '    Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
-    '    Dim opNofield As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
-    '    ' Example: import a CSV, build pressing queue, create ranked queue and schedule
-    '    'Dim filePath As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\Templates\Routing.csv"
-    '    'Dim routingDt As DataTable = ImportRoutingCsvToDataTable(filePath)
-    '    Dim currentDate As DateTime = planningboard.TerminatorTime
-    '    Dim ResRecs As IEnumerable(Of Integer)
-    '    Dim opTimes As Nullable(Of Preactor.OperationTimes)
-    '    Dim routingdt As DataTable = readOrderTable(preactor)
-    '    Dim pressingQueue As List(Of Integer) = BuildPressing200Queue(routingdt, currentDate)
-    '    CreateRankedOperationQueue(preactor, planningboard, ordersTable, "JobsQueue", pressingQueue)
-
-    '    ' Snapshot for debugging
-    '    Dim jobsQueueSnapshot As List(Of Integer) = GetQueueSnapshot(planningboard, "JobsQueue")
-
-    '    ' Simple scheduling loop: pop queue and place operation on earliest feasible resource
-    '    Dim pos As Integer = 1
-    '    Dim opRec As Integer = 1
-    '    Dim reccount As Integer = preactor.RecordCount(ordersTable)
-    '    Dim AIRDRY As Integer = planningboard.GetResourceNumber("AIRDRY")
-    '    Dim LOADBICK As Integer = planningboard.GetResourceNumber("LOADBICK")
-    '    Dim LOADPTK As Integer = planningboard.GetResourceNumber("LOADPTK")
-    '    Dim DRYER As Integer = planningboard.GetResourceNumber("DRYER")
-    '    Dim batchTimeField As Integer = preactor.GetFieldNumber(ordersTable, "Batch Time")
-    '    Dim batchDueField As Integer = preactor.GetFieldNumber(ordersTable, "Date Attribute 2")
-
-
-    '    '------------------------------------------------------------
-    '    ' Select the resource that gives the earliest feasible
-    '    ' ChangeStart time for the operation.
-    '    '
-    '    ' Key idea:
-    '    '   - Test the operation on ALL valid alternate resources
-    '    '   - Choose the candidate with the minimum ChangeStart
-    '    '   - Then load the operation on that chosen resource
-    '    '------------------------------------------------------------
-
-    '    '        While (planningboard.GetOperationInQueue("JobsQueue", 1, opRec))
-
-    '    ' Take the next operation out of the ranked queue so we can decide where to load it.
-    '    '        planningboard.RemoveOperationFromQueue("JobsQueue", opRec)
-
-    '    ' Inner loop: schedule this operation and then walk to subsequent operations
-    '    ' (your "family" / routing chain) using GetNextOperation.
-    '    While (opRec > 0 And opRec < reccount)
-    '        If preactor.ReadFieldInt(ordersTable, opNofield, opRec) > 200 And preactor.ReadFieldInt(ordersTable, opNofield, opRec) < 290 Then
-    '            ' Find all valid alternate resources for this operation.
-    '            ResRecs = planningboard.FindResources(opRec)
-
-    '            ' Track the best (earliest) feasible candidate we find.
-    '            Dim bestResRec As Integer = 0
-    '            Dim bestOpTimes As Nullable(Of Preactor.OperationTimes) = Nothing
-
-    '            ' Loop through *all* alternate resources and test feasibility on each.
-    '            For Each ResRec In ResRecs
-
-    '                ' Test if the operation can be placed on this resource, and get the timing result.
-    '                ' TerminatorTime is the boundary between schedule history and schedule future;
-    '                ' using it here aligns with "schedule as soon as possible" in the future horizon. :contentReference[oaicite:3]{index=3}
-    '                opTimes = planningboard.TestOperationOnResource(opRec, ResRec, planningboard.TerminatorTime)
-
-    '                If opTimes.HasValue Then
-    '                    ' This resource is feasible. Compare it to the current best candidate.
-    '                    ' We want the earliest possible start time (ChangeStart).
-    '                    If (Not bestOpTimes.HasValue) Then
-    '                        ' First feasible candidate becomes the best by default.
-    '                        bestResRec = ResRec
-    '                        bestOpTimes = opTimes
-    '                    Else
-    '                        ' Replace best candidate if this one starts earlier.
-    '                        If opTimes.Value.ChangeStart < bestOpTimes.Value.ChangeStart Then
-    '                            bestResRec = ResRec
-    '                            bestOpTimes = opTimes
-    '                        End If
-    '                    End If
-    '                End If
-
-    '            Next ' evaluate next alternate resource
-
-    '            ' After scanning all alternates:
-    '            If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
-    '                If bestResRec = AIRDRY Then
-    '                    ' Load the operation onto the resource that gives the earliest feasible start.
-    '                    planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart.Date.AddDays(1))
-    '                    'ElseIf bestResRec = LOADBICK Or bestResRec = LOADPTK Then
-    '                    '    planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart.Date.AddDays(1))
-    '                ElseIf bestResRec = DRYER Then
-    '                    Dim i As DateTime
-    '                    Dim batchTime As Double = preactor.ReadFieldDouble(ordersTable, batchTimeField, opRec + 2)
-    '                    i = bestOpTimes.Value.ChangeStart.AddDays(batchTime + 1)
-    '                    If i > preactor.ReadFieldDateTime(ordersTable, batchDueField, opRec) Then
-    '                        planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
-    '                    Else
-    '                        planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
-    '                    End If
-    '                End If
-    '            Else
-    '                ' No feasible resource was found.
-    '                ' Practical meaning:
-    '                '   - This operation cannot be scheduled on any alternate resource at/after the terminator boundary
-    '                '     under current constraints (calendars, setups, secondary constraints, etc.).
-    '                ' Leave it unscheduled (or handle with a custom queue / reason code if your design requires).
-    '            End If
-    '        End If
-    '        ' Move to the next operation in the routing chain.
-    '        'opRec = planningboard.GetNextOperation(opRec, 1)
-    '        opRec += 1 ' API-supported routing traversal:contentReference[oaicite:4]{index=4}
-
-    '    End While ' next operation in chain
-
-    '    '      End While ' next op in JobsQueue
-    '    preactor.DestroyStatus()
-    '    Return 0
-    'End Function
 
     Public Function runPressToFiring(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
 
