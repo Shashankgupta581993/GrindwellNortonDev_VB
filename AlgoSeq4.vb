@@ -130,6 +130,94 @@ Public Class AlgoSeq4
         Return 0
     End Function
 
+    Public Function runFiringSWK(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        ' Batch firing logic
+
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+
+        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+
+        ' Example: import a CSV, build pressing queue, create ranked queue and schedule
+        'Dim filePath As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\Templates\Routing.csv"
+
+        'Dim routingDt As DataTable = ImportRoutingCsvToDataTable(filePath)
+        Dim routingDt As DataTable = readOrderTable(preactor)
+
+        'Dim currentDate As New System.DateTime(2025, 8, 1, 0, 0, 0)
+        Dim currentDate As DateTime = planningboard.TerminatorTime
+
+
+        'Append schedule times from board for a few operation numbers (example)
+
+        Dim AKLN As Integer = planningboard.GetResourceNumber("SWBKILN")
+        'Dim BKLN As Integer = planningboard.GetResourceNumber("BKLN")
+        'Dim CKLN As Integer = planningboard.GetResourceNumber("CKLN")
+        'Dim DKLN As Integer = planningboard.GetResourceNumber("DKLN")
+        'Dim RKLN As Integer = planningboard.GetResourceNumber("RKLN")
+        'Dim NKLN As Integer = planningboard.GetResourceNumber("NKLN")
+        Dim LOADBICK As Integer = planningboard.GetResourceNumber("LOADSW")
+        Dim ULDBICK As Integer = planningboard.GetResourceNumber("ULDBICK")
+        Dim PREINSPC As Integer = planningboard.GetResourceNumber("PREINSPC")
+
+
+        ' Build firing plan using firing optimizer (external class)
+        Dim minOcc As Double = 0.8
+        Dim maxOcc As Double = 1.0
+        'Dim firingObj As New firingOptimizer_vf
+        'Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc, batchStartDelayMins:=60)
+        Dim debugFolder As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\Debug\Firing_" &
+                            DateTime.Now.ToString("yyyyMMdd_HHmmss")
+
+        ' Adding a boolean flag to control debug export, so you can easily turn it on/off without commenting code
+        Dim enableDebugExport As Boolean = False
+        Dim firingObj As New firingOptimizer_vf()
+
+        If enableDebugExport Then
+            firingObj.ExportFiringCandidateDebug(routingDt, debugFolder)
+        End If
+
+        ' Then call your normal BuildBatchKilnPlan + ExportPlanToCsv as before
+        'Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "C:\Users\Public\Documents\Opcenter APS Configurations\SC Ultimate v2510\kilndata.csv", currentDate, minOcc, maxOcc,
+        'allowUnderfilledTail:=True,
+        'batchStartDelayMins:=60,
+        'maxBatchesPerDayGlobal:=2)
+        Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc,
+                                                allowUnderfilledTail:=True,
+                                                batchStartDelayMins:=60,
+                                                maxBatchesPerDayGlobal:=2)
+
+
+        ' Debugger
+        If enableDebugExport Then
+            firingObj.ExportPlanToCsv(plan, debugFolder)
+        End If
+
+        ' 1) iterate firing queue (these are op 300 record numbers)
+        For Each firingOpRec As Integer In plan.QueueFiringOpRecs
+
+            ' 2) get batch metadata
+            Dim batchNo As Integer = plan.BatchNoByFiringOpRec(firingOpRec)
+            Dim batchStart As DateTime = plan.BatchStartByBatchNo(batchNo)
+            Dim batchEnd As DateTime = plan.BatchEndByBatchNo(batchNo)
+            Dim kilnName As String = plan.KilnByBatchNo(batchNo)
+            Dim batchKind As String = plan.BatchKindByBatchNo(batchNo)
+
+
+            Select Case (kilnName)
+                Case "AKLN"
+                    planningboard.PutOperationOnResource(firingOpRec, AKLN, batchStart)
+                    planningboard.PutOperationOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, planningboard.BackTestOpOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, batchStart).Value.ProcessStart)
+                    planningboard.PutOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, planningboard.TestOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, batchEnd).Value.ProcessStart)
+            End Select
+        Next
+
+
+        preactor.DestroyStatus()
+
+        Return 0
+    End Function
+
     Public Function runFiring2(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
