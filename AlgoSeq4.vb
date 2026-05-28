@@ -47,10 +47,11 @@ Public Class AlgoSeq4
 
 
         ' Build firing plan using firing optimizer (external class)
-        Dim minOcc As Double = 0.8
-        Dim maxOcc As Double = 1.0
-        'Dim firingObj As New firingOptimizer_vf
-        'Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc, batchStartDelayMins:=60)
+        ' Dim opSettings As FormatFieldPair
+        Dim maxOcc As Double = preactor.ReadFieldDouble(143, 11, 2)
+        Dim minOcc As Double = preactor.ReadFieldDouble(143, 11, 1)
+
+        Dim configDir As String = preactor.ParseShellString("{PATH}")
         Dim debugFolder As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\Debug\Firing_" &
                             DateTime.Now.ToString("yyyyMMdd_HHmmss")
 
@@ -439,16 +440,46 @@ Public Class AlgoSeq4
         'preactor.SetAutoListSize("Orders", "Members", lastRec, 1)
         'preactor.WriteMatrixField("Orders", "Members", lastRec, 1, 1, 1)
 
-        Try
-            ' ... your normal rule setup here ...
+        'Try
+        '    ' ... your normal rule setup here ...
 
-            ShowExplorerUI()   ' <-- call this when you want the UI
+        '    ShowExplorerUI()   ' <-- call this when you want the UI
 
-            Return 0
-        Catch ex As Exception
-            ' log ex.Message somewhere
-            Return -1
-        End Try
+        '    Return 0
+        'Catch ex As Exception
+        '    ' log ex.Message somewhere
+        '    Return -1
+        'End Try
+
+        'Classifications
+        'Try
+        '    Dim nFormats As Integer = preactor.FormatCount
+
+        '    For fmt As Integer = 1 To nFormats
+        '        Dim formatName As String = preactor.GetFormatName(fmt)
+        '        Dim nFields As Integer = preactor.FieldCount(fmt)
+
+        '        Debug.WriteLine($"--- Format {fmt}: {formatName} ({nFields} fields) ---")
+
+        '        For fld As Integer = 1 To nFields
+        '            Dim fieldName As String = preactor.GetFieldName(fmt, fld)
+        '            Dim classStr As String = preactor.ClassificationString(fmt, fld)
+
+
+        '            Debug.WriteLine(
+        '                $"    Field {fld}: {fieldName}   Classification: {classStr}"
+        '            )
+        '        Next
+        '    Next
+
+        '    Debug.WriteLine("Classification string listing complete.")
+
+        'Catch ex As Exception
+        '    Debug.WriteLine("Error listing classification strings: " & ex.Message)
+        'End Try
+        Debug.WriteLine(preactor.GetFieldNumber(143, "Numeric Value"))
+        Debug.WriteLine(preactor.ReadFieldDouble(143, 11, 1))
+
         Return 0
     End Function
     Public Function Test(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
@@ -456,6 +487,31 @@ Public Class AlgoSeq4
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
 
+        Try
+            Dim nFormats As Integer = preactor.FormatCount
+
+            For fmt As Integer = 1 To nFormats
+                Dim formatName As String = preactor.GetFormatName(fmt)
+                Dim nFields As Integer = preactor.FieldCount(fmt)
+
+                Debug.WriteLine($"--- Format {fmt}: {formatName} ({nFields} fields) ---")
+
+                For fld As Integer = 1 To nFields
+                    Dim fieldName As String = preactor.GetFieldName(fmt, fld)
+                    Dim classStr As String = preactor.ClassificationString(fmt, fld)
+
+
+                    Debug.WriteLine(
+                        $"    Field {fld}: {fieldName}   Classification: {classStr}"
+                    )
+                Next
+            Next
+
+            Debug.WriteLine("Classification string listing complete.")
+
+        Catch ex As Exception
+            Debug.WriteLine("Error listing classification strings: " & ex.Message)
+        End Try
 
         Return 0
     End Function
