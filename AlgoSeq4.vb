@@ -421,23 +421,44 @@ Public Class AlgoSeq4
     End Function
 
 
-    Public Function afterFiring(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+    Public Function afterFiring(ByRef preactorComObject As PreactorObj,
+                            ByRef pespComObject As Object) As Integer
+
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
-        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
-        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
-        Dim oprec As Integer
-        Dim routingDt As DataTable = readOrderTable(preactor)
-        Dim currentDate As DateTime = planningboard.TerminatorTime
+        Dim postFiring As New PostFiringScheduler()
 
-        While (oprec > 0)
+        Dim passNo As Integer = 0
+        Dim scheduledThisPass As Integer = 0
+        Dim totalScheduled As Integer = 0
 
-        End While
+        Do
+            ' Refresh after every pass.
+            ' This is critical because once one finishing op is scheduled,
+            ' the next downstream op becomes eligible.
+            Dim routingDt As DataTable = readOrderTable(preactor)
 
+            Dim queue As List(Of PostFiringScheduler.QueueItem) =
+            postFiring.BuildQueue(preactor, planningboard, routingDt, "KILNACK")
+
+            If queue.Count = 0 Then Exit Do
+
+            scheduledThisPass = postFiring.ScheduleQueue(preactor, planningboard, queue)
+
+            totalScheduled += scheduledThisPass
+            passNo += 1
+
+        Loop While scheduledThisPass > 0 AndAlso passNo < 20
+
+        System.Diagnostics.Debug.WriteLine("PostFiring completed. TotalScheduled=" &
+                                       totalScheduled &
+                                       ", Passes=" & passNo)
+
+        preactor.DestroyStatus()
         Return 0
-    End Function
 
+    End Function
 
     Public Function showMeta(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)

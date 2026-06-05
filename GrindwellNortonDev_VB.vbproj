@@ -129,6 +129,7 @@
       <DependentUpon>Settings.settings</DependentUpon>
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
     </Compile>
+    <Compile Include="PostFiringScheduler.vb" />
     <Compile Include="Preactor Extensions.vb" />
     <Compile Include="pressingOptimizer_vf.vb" />
     <Compile Include="SharedHelpers.vb" />
