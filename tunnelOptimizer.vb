@@ -27,7 +27,7 @@ Public Class tunnelOptimizer_vf
     Private Const COL_ORDERNO As String = "Order No"
     Private Const COL_OPREC As String = "OrdersID"
     Private Const COL_OPNO As String = "Operation Number"
-    Private Const COL_KILNTYPE As String = "Klin Type"          ' Tunnel orders: "2" (per your rule)
+    Private Const COL_KILNTYPE As String = "Kiln Type"          ' Tunnel orders: "2" (per your rule)
     Private Const COL_IS_SCHEDULED As String = "is_scheduled"
     Private Const COL_SCHED_END As String = "scheduled_end_time"
     Private Const COL_FIRING_DUE As String = "firing due date"

@@ -176,7 +176,7 @@ Public Module SharedHelpers
             "OrdersID", "Order No", "Part Number", "Part Name", "Operation Number", "Operation Name",
             "Resource Group", "Required Resource", "Setup Time", "Time Per Item", "Sales Order", "Quantity",
             "Due Date", "Batch Time", "Process Time Type", "Tonnage", "Cycle Type", "Volume Occupancy",
-            "Klin Type", "Firing buffer", "MTS/MTO", "MTS/MTO priority", "Que Time", "Pressing buffer",
+            "Kiln Type", "Firing buffer", "MTS/MTO", "MTS/MTO priority", "Que Time", "Pressing buffer",
             "Wheel Dia", "Wheel thickness", "Week start", "Pressing earliest start", "Pressing Due date",
             "Constaint Usage", "Constraint Qty", "firing earliest start date", "firing due date", "scheduled_start_time", "scheduled_end_time", "is_scheduled", "parent_record", "prev_op_is_scheduled"
         }
@@ -249,7 +249,7 @@ Public Module SharedHelpers
             r("Tonnage") = preactor.ReadFieldInt(ordersTable, Qty, rec)
             r("Cycle Type") = preactor.ReadFieldString(ordersTable, cycleType, rec)
             r("Volume Occupancy") = preactor.ReadFieldDouble(ordersTable, volumeOcc, rec)
-            r("Klin Type") = preactor.ReadFieldInt(ordersTable, klnType, rec)
+            r("Kiln Type") = preactor.ReadFieldInt(ordersTable, klnType, rec)
             'r("Firing buffer") = preactor.ReadFieldInt(ordersTable, , rec)
             r("MTS/MTO") = preactor.ReadFieldInt(ordersTable, mts, rec)
             'r("MTS/MTO priority") = preactor.ReadFieldInt(ordersTable, Qty, rec)

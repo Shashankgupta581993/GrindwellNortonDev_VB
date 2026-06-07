@@ -35,7 +35,7 @@ Public Class firingOptimizer_vf
     Private Const COL_ORDERNO As String = "Order No"
     Private Const COL_OPREC As String = "OrdersID"
     Private Const COL_OPNO As String = "Operation Number"
-    Private Const COL_KILNTYPE As String = "Klin Type"
+    Private Const COL_KILNTYPE As String = "Kiln Type"
     Private Const COL_CYCLE As String = "Cycle Type"
     Private Const COL_OCC As String = "Volume Occupancy"
     Private Const COL_BATCHTIME As String = "Batch Time"
@@ -249,7 +249,7 @@ Public Class firingOptimizer_vf
     '    For Each r As DataRow In dt.Rows
 
     '        Dim kilnType As String = SafeStr(r(COL_KILNTYPE)).Trim()
-    '        If Not kilnType.Equals("1", StringComparison.OrdinalIgnoreCase) Then Continue For '' this is where I made the klin type change
+    '        If Not kilnType.Equals("1", StringComparison.OrdinalIgnoreCase) Then Continue For '' this is where I made the Kiln Type change
 
     '        Dim opNo As Integer = SafeInt(r(COL_OPNO))
     '        If opNo <> 300 Then Continue For

@@ -160,13 +160,13 @@ Public Class CsvRoutingReader
     ' NOTE:
     ' - This is a NEW function reflecting the changed requirements.
     ' - It does NOT modify your previous AddFiringWeekAndBatchColumns().
-    ' - It filters Klin Type = "Batch" first and batches only within those orders.
+    ' - It filters Kiln Type = "Batch" first and batches only within those orders.
     Public Function AddFiringWeekAndBatchColumns_V2_ByExpectedDateAndCycle(ByVal routingTable As DataTable,
                                                                       Optional ByVal baseMaxOccupancy As Double = 1.0,
                                                                       Optional ByVal maxOccBufferPct As Double = 0.2) As DataTable
         '=========================================================
         ' PURPOSE (V2):
-        '   - Filter to Klin Type = "Batch"
+        '   - Filter to Kiln Type = "Batch"
         '   - Use Operation Number = 300 rows as authoritative per Order No
         '   - Compute "firing week" from ExpectedFiringStartDate
         '   - Batch ONLY same cycle type, FCFS by ExpectedFiringStartDate
@@ -180,7 +180,7 @@ Public Class CsvRoutingReader
         ' Column names (edit here ONLY if your CSV headers differ)
         '-------------------------------------------------------
         Dim expectedDateCol As String = "ExpectedFiringStartDate"
-        Dim kilnTypeCol As String = "Klin Type"
+        Dim kilnTypeCol As String = "Kiln Type"
         Dim cycleTypeCol As String = "Cycle Type"
 
         Dim orderNoCol As String = "Order No"
@@ -251,7 +251,7 @@ Public Class CsvRoutingReader
 
         '=======================================================
         ' STEP 1: Build one order-level record per Order No from:
-        '   - Klin Type = "Batch"
+        '   - Kiln Type = "Batch"
         '   - Operation Number = 300
         '=======================================================
         Dim orders As New List(Of OrderInfo)()
@@ -638,7 +638,7 @@ Public Class CsvRoutingReader
         '=========================================================
         ' PURPOSE:
         '   Day-by-day pseudo-scheduling to create PRESSING batches
-        '   (for Klin Type = Batch) with changeover reduction keys:
+        '   (for Kiln Type = Batch) with changeover reduction keys:
         '       Resource Group + Wheel Dia + Wheel thickness
         '
         ' KEY RULES:
@@ -674,7 +674,7 @@ Public Class CsvRoutingReader
         '-------------------------------------------------------
         Dim orderNoCol As String = "Order No"
         Dim operationNoCol As String = "Operation Number"
-        Dim kilnTypeCol As String = "Klin Type"
+        Dim kilnTypeCol As String = "Kiln Type"
 
         Dim resourceGroupCol As String = "Resource Group"
         Dim wheelDiaCol As String = "Wheel Dia"
@@ -730,7 +730,7 @@ Public Class CsvRoutingReader
 
         '=======================================================
         ' STEP 1: Build order-level records from:
-        '   - Klin Type = Batch
+        '   - Kiln Type = Batch
         '   - Operation Number = attributeOperationNumber (default 300)
         '=======================================================
         Dim orders As New List(Of PressOrder)()

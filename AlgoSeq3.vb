@@ -325,7 +325,7 @@ Public Class AlgoSeq3
                 Dim opNo As Integer = ParseIntSafe(CStr(r("Operation Number")), 0)
                 Dim orderNo As String = CStr(r("Order No"))
 
-                Dim info As New OpInfo() With {
+            Dim info As New OpInfo() With {
                     .OpRec = opRec,
                     .OrderNo = orderNo,
                     .OpNo = opNo,
@@ -333,7 +333,7 @@ Public Class AlgoSeq3
                     .ResGroup = SafeGet(r, "Resource Group"),
                     .WheelDia = SafeGet(r, "Wheel Dia"),
                     .WheelPin = SafeGet(r, "Wheel thickness"),
-                    .KlinType = SafeGet(r, "Klin Type"),
+                    .KlinType = SafeGet(r, "Kiln Type"),
                     .CycleType = SafeGet(r, "Cycle Type"),
                     .VolumeOcc = ParseDoubleSafe(SafeGet(r, "Volume Occupancy"), 0.0),
                     .WeekStart = ParseDateSafe(SafeGet(r, "Week start"), DateTime.Today),
@@ -341,10 +341,10 @@ Public Class AlgoSeq3
                     .PressDueDate = ParseDateSafe(SafeGet(r, "pressing due date"), DateTime.MaxValue)
                 }
 
-                ' PlanDay defaults:
-                ' - For pressing (op200): day from pressing earliest start date
-                ' - For firing: day from week start (proxy)
-                If info.OpNo = 200 Then
+            ' PlanDay defaults:
+            ' - For pressing (op200): day from pressing earliest start date
+            ' - For firing: day from week start (proxy)
+            If info.OpNo = 200 Then
                     info.PlanDay = info.PressEarliestStart.Date
                 ElseIf info.OpNo = 300 Then
                     info.PlanDay = info.WeekStart.Date
