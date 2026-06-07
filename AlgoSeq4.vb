@@ -43,8 +43,7 @@ Public Class AlgoSeq4
         Dim ULDBICK As Integer = planningboard.GetResourceNumber("ULDBICK")
         Dim PREINSPC As Integer = planningboard.GetResourceNumber("PREINSPC")
         Dim KILNACK As Integer = planningboard.GetResourceNumber("KILNACK")
-        'Dim PREVIOUSOP As Integer
-        'Dim NEXTOP As Integer
+
 
 
         ' Build firing plan using firing optimizer (external class)
@@ -63,13 +62,13 @@ Public Class AlgoSeq4
         If enableDebugExport Then
             firingObj.ExportFiringCandidateDebug(routingDt, debugFolder)
         End If
-
+        Dim ConfigPath As String = preactor.ParseShellString("{PATH}")
         ' Then call your normal BuildBatchKilnPlan + ExportPlanToCsv as before
         'Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "C:\Users\Public\Documents\Opcenter APS Configurations\SC Ultimate v2510\kilndata.csv", currentDate, minOcc, maxOcc,
         'allowUnderfilledTail:=True,
         'batchStartDelayMins:=60,
         'maxBatchesPerDayGlobal:=2)
-        Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc,
+        Dim plan = firingObj.BuildBatchKilnPlan(routingDt, ConfigPath & "\kilndata.csv", currentDate, minOcc, maxOcc,
                                                 allowUnderfilledTail:=True,
                                                 batchStartDelayMins:=60,
                                                 maxBatchesPerDayGlobal:=2)
@@ -123,7 +122,7 @@ Public Class AlgoSeq4
                 ' Re-evaluate for the subsequent operation in the sequence
                 NEXTOP = planningboard.GetNextOperation(NEXTOP, 1)
                 If NEXTOP > 0 Then
-                    planningboard.PutOperationOnResource(NEXTOP, PREINSPC, planningboard.TestOperationOnResource(NEXTOP, PREINSPC, batchEnd).Value.ProcessStart.AddDays(1))
+                    planningboard.PutOperationOnResource(NEXTOP, PREINSPC, planningboard.TestOperationOnResource(NEXTOP, PREINSPC, batchEnd).Value.ProcessStart.AddDays(1)) '2 days
                     NEXTOP = planningboard.GetNextOperation(NEXTOP, 1)
                     If NEXTOP > 0 Then
                         planningboard.PutOperationOnResource(NEXTOP, KILNACK, planningboard.TestOperationOnResource(NEXTOP, KILNACK, batchEnd).Value.ProcessStart)
@@ -305,7 +304,7 @@ Public Class AlgoSeq4
                 End If
                 If NEXTOP > 0 Then
                     Dim testop As OperationTimes? = planningboard.TestOperationOnResource(NEXTOP, PREINSPC, batchstart.AddHours(2))
-                    planningboard.PutOperationOnResource(NEXTOP, PREINSPC, planningboard.TestOperationOnResource(NEXTOP, PREINSPC, batchstart.AddHours(2)).Value.ProcessStart.AddDays(1))
+                    planningboard.PutOperationOnResource(NEXTOP, PREINSPC, planningboard.TestOperationOnResource(NEXTOP, PREINSPC, batchstart.AddHours(2)).Value.ProcessStart.AddDays(1)) '2 days
                     NEXTOP = planningboard.GetNextOperation(NEXTOP, 1)
                     If NEXTOP > 0 Then
                         Dim testop2 As OperationTimes? = planningboard.TestOperationOnResource(NEXTOP, KILNACK, batchstart.AddHours(2))
@@ -473,39 +472,41 @@ Public Class AlgoSeq4
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
-        Try
-            ' Define the file path in the local directory
-            Dim filePath As String = "classifications.txt"
+        Dim workingdirectory As String = preactor.ParseShellString("{PATH}")
+        MessageBox.Show("Current working directory: " & workingdirectory)
+        'Try
+        '    ' Define the file path in the local directory
+        '    Dim filePath As String = "classifications.txt"
 
-            ' Wrap the logic in a StreamWriter to write to the text file
-            Using writer As New System.IO.StreamWriter(filePath, False)
-                Dim nFormats As Integer = preactor.FormatCount
+        '    ' Wrap the logic in a StreamWriter to write to the text file
+        '    Using writer As New System.IO.StreamWriter(filePath, False)
+        '        Dim nFormats As Integer = preactor.FormatCount
 
-                For fmt As Integer = 1 To nFormats
-                    Dim formatName As String = preactor.GetFormatName(fmt)
-                    Dim nFields As Integer = preactor.FieldCount(fmt)
+        '        For fmt As Integer = 1 To nFormats
+        '            Dim formatName As String = preactor.GetFormatName(fmt)
+        '            Dim nFields As Integer = preactor.FieldCount(fmt)
 
-                    ' Replaced Debug.WriteLine with writer.WriteLine
-                    writer.WriteLine($"--- Format {fmt}: {formatName} ({nFields} fields) ---")
+        '            ' Replaced Debug.WriteLine with writer.WriteLine
+        '            writer.WriteLine($"--- Format {fmt}: {formatName} ({nFields} fields) ---")
 
-                    For fld As Integer = 1 To nFields
-                        Dim fieldName As String = preactor.GetFieldName(fmt, fld)
-                        Dim classStr As String = preactor.ClassificationString(fmt, fld)
+        '            For fld As Integer = 1 To nFields
+        '                Dim fieldName As String = preactor.GetFieldName(fmt, fld)
+        '                Dim classStr As String = preactor.ClassificationString(fmt, fld)
 
 
-                        writer.WriteLine(
-                            $"    Field {fld}: {fieldName}   Classification: {classStr}"
-                        )
-                    Next
-                Next
+        '                writer.WriteLine(
+        '                    $"    Field {fld}: {fieldName}   Classification: {classStr}"
+        '                )
+        '            Next
+        '        Next
 
-                writer.WriteLine("Classification string listing complete.")
-            End Using
+        '        writer.WriteLine("Classification string listing complete.")
+        '    End Using
 
-        Catch ex As Exception
-            ' Appends the error to the same file in case something fails
-            System.IO.File.AppendAllText("classifications.txt", "Error listing classification strings: " & ex.Message & Environment.NewLine)
-        End Try
+        'Catch ex As Exception
+        '    ' Appends the error to the same file in case something fails
+        '    System.IO.File.AppendAllText("classifications.txt", "Error listing classification strings: " & ex.Message & Environment.NewLine)
+        'End Try
         Return 0
     End Function
 
