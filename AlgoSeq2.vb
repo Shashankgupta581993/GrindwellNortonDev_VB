@@ -151,7 +151,7 @@ Public Class AlgoSeq2
         Dim dt As New DataTable("Orderdata")
         Dim cycletype As String
         Dim volume As String
-        Dim klintype As String
+        Dim kilntype As String
 
         dt.Columns.Add("OrderNo", GetType(String))
         dt.Columns.Add("Duration", GetType(String))
@@ -160,7 +160,7 @@ Public Class AlgoSeq2
         dt.Columns.Add("WeekNo", GetType(String))
         dt.Columns.Add("CycleType", GetType(String))
         dt.Columns.Add("Volume", GetType(String))
-        dt.Columns.Add("Klintype", GetType(String))
+        dt.Columns.Add("kilntype", GetType(String))
 
         ordersParent = New FormatFieldPair()
         familyFields = preactor.FindClassificationString("FAMILY")
@@ -185,7 +185,7 @@ Public Class AlgoSeq2
                     firingtime = planningboard.GetOperationTimes(firingrec).Value
                     cycletype = preactor.ReadFieldString("Orders", "String Attribute 3", firingrec)
                     volume = preactor.ReadFieldString("Orders", "String Attribute 4", firingrec)
-                    klintype = preactor.ReadFieldString("Orders", "String Attribute 5", firingrec)
+                    kilntype = preactor.ReadFieldString("Orders", "String Attribute 5", firingrec)
                     ' your code is here
 
                     weekdayNumber = (CInt(firingtime.Value.OperationTimes.ProcessStart.DayOfWeek) + 6) Mod 7 + 1
@@ -193,7 +193,7 @@ Public Class AlgoSeq2
 
                     ' your code is here
                     MsgBox("Order No.:" & orderno & vbNewLine & "duration total :" & durationvalue.ToString() & vbNewLine & "firingrec:" & firingtime.Value.OperationTimes.ProcessStart.ToString() & vbNewLine & "weekdaynumber:" & weekdayNumber & vbNewLine & "weeknumber:" & weekNumber)
-                    dt.Rows.Add(orderno, durationvalue.ToString(), firingtime.Value.OperationTimes.ProcessStart.ToString(), weekdayNumber, weekNumber, cycletype, volume, klintype)
+                    dt.Rows.Add(orderno, durationvalue.ToString(), firingtime.Value.OperationTimes.ProcessStart.ToString(), weekdayNumber, weekNumber, cycletype, volume, kilntype)
 
                 End If
             End If

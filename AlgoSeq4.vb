@@ -272,7 +272,7 @@ Public Class AlgoSeq4
 
             cartNo = plan.CartNoByFiringOpRec(firingOpRec)
             batchstart = plan.StartByFiringOpRec(firingOpRec)
-            preactor.WriteField(ordersTable, BATCHTIME, firingOpRec, 28 / 4.5)
+            preactor.WriteField(ordersTable, BATCHTIME, firingOpRec, totalCartsAvailable / cartsPerDay)
             'planningboard.PutOperationOnResource(firingOpRec, TCBK, batchstart.AddDays(1))
             planningboard.PutOperationOnResource(firingOpRec, TCBK, batchstart.AddHours(2))
 
