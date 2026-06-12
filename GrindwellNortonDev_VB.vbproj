@@ -133,6 +133,7 @@
     <Compile Include="Preactor Extensions.vb" />
     <Compile Include="pressingOptimizer_vf.vb" />
     <Compile Include="SharedHelpers.vb" />
+    <Compile Include="swkOptimizer_vf.vb" />
     <Compile Include="tunnelOptimizer.vb" />
   </ItemGroup>
   <ItemGroup>

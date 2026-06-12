@@ -136,86 +136,179 @@ Public Class AlgoSeq4
         Return 0
     End Function
 
-    'Public Function runFiringSWK(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
-    '    ' Batch firing logic
+    Public Function runSWKFiring(ByRef preactorComObject As PreactorObj,
+                             ByRef pespComObject As Object) As Integer
 
-    '    Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
-    '    Dim planningboard As IPlanningBoard = preactor.PlanningBoard
-    '    Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
-    '    ' Example: import a CSV, build pressing queue, create ranked queue and schedule
-    '    'Dim filePath As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\Templates\Routing.csv"
+        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
 
-    '    'Dim routingDt As DataTable = ImportRoutingCsvToDataTable(filePath)
-    '    Dim routingDt As DataTable = readOrderTable(preactor)
+        Dim routingDt As DataTable = readOrderTable(preactor)
+        Dim currentDate As DateTime = planningboard.TerminatorTime
 
-    '    'Dim currentDate As New System.DateTime(2025, 8, 1, 0, 0, 0)
-    '    Dim currentDate As DateTime = planningboard.TerminatorTime
+        ' ------------------------------------------------------------
+        ' SWK verified parameters
+        ' ------------------------------------------------------------
+        Dim swkMinTonnage As Double = 0.8
+        Dim swkMaxTonnage As Double = 1.0
+        Dim swkDailyBatchLimit As Integer = 2
+        Dim swkBatchStartDelayMins As Integer = 60
+        Dim swkAllowUnderfilledTail As Boolean = True
 
-    '    'Append schedule times from board for a few operation numbers (example)
+        ' Later replace above constants with GN Optimizer Settings reads:
+        '   SWK Min Tonnage
+        '   SWK Max Tonnage
+        '   SWK Daily Batch Limit
+        '   SWK Batch Start Delay Mins
+        '   SWK Allow Underfilled Tail
 
-    '    Dim AKLN As Integer = planningboard.GetResourceNumber("SWBKILN")
-    '    Dim LOADBICK As Integer = planningboard.GetResourceNumber("LOADSW")
-    '    Dim ULDBICK As Integer = planningboard.GetResourceNumber("ULDBICK")
-    '    Dim PREINSPC As Integer = planningboard.GetResourceNumber("PREINSPC")
+        Dim SWBKILN As Integer = planningboard.GetResourceNumber("SWBKILN")
+        Dim LOADSW As Integer = planningboard.GetResourceNumber("LOADSW")
+        Dim ULDSW As Integer = planningboard.GetResourceNumber("ULDSW")
+        Dim PREINSPC As Integer = planningboard.GetResourceNumber("PREINSPC")
+        Dim KILNACK As Integer = planningboard.GetResourceNumber("KILNACK")
 
-    '    ' Build firing plan using firing optimizer (external class)
-    '    Dim minOcc As Double = 0.8
-    '    Dim maxOcc As Double = 1.0
-    '    'Dim firingObj As New firingOptimizer_vf
-    '    'Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc, batchStartDelayMins:=60)
-    '    Dim debugFolder As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\Debug\Firing_" &
-    '                        DateTime.Now.ToString("yyyyMMdd_HHmmss")
+        If SWBKILN <= 0 Then Throw New Exception("SWK resource not found: SWBKILN")
+        If LOADSW <= 0 Then Throw New Exception("SWK loading resource not found: LOADSW")
+        If ULDSW <= 0 Then Throw New Exception("SWK unloading resource not found: ULDSW")
+        If PREINSPC <= 0 Then Throw New Exception("Resource not found: PREINSPC")
+        If KILNACK <= 0 Then Throw New Exception("Resource not found: KILNACK")
 
-    '    ' Adding a boolean flag to control debug export, so you can easily turn it on/off without commenting code
-    '    Dim enableDebugExport As Boolean = False
-    '    Dim firingObj As New firingOptimizer_vf()
+        Dim swkObj As New swkOptimizer_vf()
 
-    '    If enableDebugExport Then
-    '        firingObj.ExportFiringCandidateDebug(routingDt, debugFolder)
-    '    End If
+        Dim plan As swkOptimizer_vf.SwkBatchPlan =
+        swkObj.BuildSwkPlan(routingDt,
+                            currentDate,
+                            swkMinTonnage,
+                            swkMaxTonnage,
+                            dailyBatchLimit:=swkDailyBatchLimit,
+                            batchStartDelayMins:=swkBatchStartDelayMins,
+                            allowUnderfilledTail:=swkAllowUnderfilledTail,
+                            swkResourceName:="SWBKILN")
 
-    '    ' Then call your normal BuildBatchKilnPlan + ExportPlanToCsv as before
-    '    'Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "C:\Users\Public\Documents\Opcenter APS Configurations\SC Ultimate v2510\kilndata.csv", currentDate, minOcc, maxOcc,
-    '    'allowUnderfilledTail:=True,
-    '    'batchStartDelayMins:=60,
-    '    'maxBatchesPerDayGlobal:=2)
-    '    Dim plan = firingObj.BuildBatchKilnPlan(routingDt, "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\kilndata.csv", currentDate, minOcc, maxOcc,
-    '                                            allowUnderfilledTail:=True,
-    '                                            batchStartDelayMins:=60,
-    '                                            maxBatchesPerDayGlobal:=2)
+        Dim configDir As String = preactor.ParseShellString("{PATH}")
+        Dim debugFolder As String = configDir & "\Debug\SWK_" & DateTime.Now.ToString("yyyyMMdd_HHmmss")
+        Dim enableDebugExport As Boolean = False
 
+        If enableDebugExport Then
+            swkObj.ExportSwkPlanToCsv(plan, debugFolder)
+        End If
 
-    '    ' Debugger
-    '    If enableDebugExport Then
-    '        firingObj.ExportPlanToCsv(plan, debugFolder)
-    '    End If
+        For Each firingOpRec As Integer In plan.QueueFiringOpRecs
 
-    '    ' 1) iterate firing queue (these are op 300 record numbers)
-    '    For Each firingOpRec As Integer In plan.QueueFiringOpRecs
+            If Not plan.BatchNoByFiringOpRec.ContainsKey(firingOpRec) Then Continue For
 
-    '        ' 2) get batch metadata
-    '        Dim batchNo As Integer = plan.BatchNoByFiringOpRec(firingOpRec)
-    '        Dim batchStart As DateTime = plan.BatchStartByBatchNo(batchNo)
-    '        Dim batchEnd As DateTime = plan.BatchEndByBatchNo(batchNo)
-    '        Dim kilnName As String = plan.KilnByBatchNo(batchNo)
-    '        Dim batchKind As String = plan.BatchKindByBatchNo(batchNo)
+            Dim batchNo As Integer = plan.BatchNoByFiringOpRec(firingOpRec)
+            Dim batchStart As DateTime = plan.BatchStartByBatchNo(batchNo)
+            Dim batchEnd As DateTime = plan.BatchEndByBatchNo(batchNo)
 
+            ' --------------------------------------------------------
+            ' 1. Schedule firing op 300 on SWBKILN
+            ' --------------------------------------------------------
+            Dim firingTimes As OperationTimes? =
+            planningboard.TestOperationOnResource(firingOpRec, SWBKILN, batchStart)
 
-    '        Select Case (kilnName)
-    '            Case "AKLN"
-    '                planningboard.PutOperationOnResource(firingOpRec, AKLN, batchStart)
-    '                planningboard.PutOperationOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, planningboard.BackTestOpOnResource(planningboard.GetPreviousOperation(firingOpRec, 1), LOADBICK, batchStart).Value.ProcessStart)
-    '                planningboard.PutOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, planningboard.TestOperationOnResource(planningboard.GetNextOperation(firingOpRec, 1), ULDBICK, batchEnd).Value.ProcessStart)
-    '        End Select
-    '    Next
+            'If firingTimes.HasValue Then
+            planningboard.PutOperationOnResource(firingOpRec,
+                                                 SWBKILN,
+                                                 batchStart)
+            'Else
+            'System.Diagnostics.Debug.WriteLine("SWK: Cannot place firing op " &
+            'firingOpRec &
+            '                                   " on SWBKILN at " &
+            'batchStart.ToString("yyyy-MM-dd HH:mm:ss"))
+            '    Continue For
+            'End If
 
+            ' --------------------------------------------------------
+            ' 2. Schedule previous loading operation on LOADSW
+            ' --------------------------------------------------------
+            Dim previousOp As Integer = planningboard.GetPreviousOperation(firingOpRec, 1)
 
-    '    preactor.DestroyStatus()
+            If previousOp > 0 Then
+                Dim loadTimes As OperationTimes? =
+                planningboard.BackTestOpOnResource(previousOp, LOADSW, batchStart)
 
-    '    Return 0
-    'End Function
+                If loadTimes.HasValue Then
+                    planningboard.PutOperationOnResource(previousOp,
+                                                     LOADSW,
+                                                     loadTimes.Value.ProcessStart)
+                Else
+                    System.Diagnostics.Debug.WriteLine("SWK: Cannot back-schedule LOADSW for previous op " &
+                                                   previousOp &
+                                                   ", firing op " &
+                                                   firingOpRec)
+                End If
+            End If
 
+            ' --------------------------------------------------------
+            ' 3. Schedule next unloading operation on ULDSW
+            ' --------------------------------------------------------
+            Dim nextOp As Integer = planningboard.GetNextOperation(firingOpRec, 1)
+
+            If nextOp > 0 Then
+
+                Dim unloadTimes As OperationTimes? =
+                planningboard.TestOperationOnResource(nextOp, ULDSW, batchEnd)
+
+                If unloadTimes.HasValue Then
+                    planningboard.PutOperationOnResource(nextOp,
+                                                     ULDSW,
+                                                     unloadTimes.Value.ProcessStart)
+                Else
+                    System.Diagnostics.Debug.WriteLine("SWK: Cannot schedule ULDSW for next op " &
+                                                   nextOp &
+                                                   ", firing op " &
+                                                   firingOpRec)
+                    Continue For
+                End If
+
+                ' ----------------------------------------------------
+                ' 4. PREINSPC
+                ' ----------------------------------------------------
+                nextOp = planningboard.GetNextOperation(nextOp, 1)
+
+                If nextOp > 0 Then
+
+                    Dim preInspTimes As OperationTimes? =
+                    planningboard.TestOperationOnResource(nextOp, PREINSPC, batchEnd)
+
+                    If preInspTimes.HasValue Then
+                        planningboard.PutOperationOnResource(nextOp,
+                                                         PREINSPC,
+                                                         preInspTimes.Value.ProcessStart.AddDays(1))
+                    Else
+                        System.Diagnostics.Debug.WriteLine("SWK: Cannot schedule PREINSPC for op " & nextOp)
+                        Continue For
+                    End If
+
+                    ' ------------------------------------------------
+                    ' 5. KILNACK
+                    ' ------------------------------------------------
+                    nextOp = planningboard.GetNextOperation(nextOp, 1)
+
+                    If nextOp > 0 Then
+                        Dim ackTimes As OperationTimes? =
+                        planningboard.TestOperationOnResource(nextOp, KILNACK, batchEnd)
+
+                        If ackTimes.HasValue Then
+                            planningboard.PutOperationOnResource(nextOp,
+                                                             KILNACK,
+                                                             ackTimes.Value.ProcessStart)
+                        Else
+                            System.Diagnostics.Debug.WriteLine("SWK: Cannot schedule KILNACK for op " & nextOp)
+                        End If
+                    End If
+                End If
+            End If
+
+        Next
+
+        preactor.DestroyStatus()
+        Return 0
+
+    End Function
     Public Function runFiring2(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard

@@ -246,7 +246,7 @@ Public Module SharedHelpers
             r("Due Date") = preactor.ReadFieldDateTime(ordersTable, dueDate, rec)
             r("Batch Time") = preactor.ReadFieldDouble(ordersTable, batchTime, rec) * 1440
             'r("Process Time Type") = preactor.ReadFieldString(ordersTable, prsTimeType, rec)
-            r("Tonnage") = preactor.ReadFieldInt(ordersTable, Qty, rec)
+            r("Tonnage") = preactor.ReadFieldDouble(ordersTable, tonnage, rec)
             r("Cycle Type") = preactor.ReadFieldString(ordersTable, cycleType, rec)
             r("Volume Occupancy") = preactor.ReadFieldDouble(ordersTable, volumeOcc, rec)
             r("Kiln Type") = preactor.ReadFieldInt(ordersTable, klnType, rec)
