@@ -895,28 +895,86 @@ Public Class AlgoSeq4
         Dim passNo As Integer = 0
         Dim scheduledThisPass As Integer = 0
         Dim totalScheduled As Integer = 0
+        'Dim opRec As Integer
+        Dim ResRec As Integer
+        Dim ResRecs As IEnumerable(Of Integer)
+        Dim opTimes As Nullable(Of Preactor.OperationTimes)
 
-        Do
-            ' Refresh after every pass.
-            ' This is critical because once one finishing op is scheduled,
-            ' the next downstream op becomes eligible.
-            Dim routingDt As DataTable = readOrderTable(preactor)
+        'Do
+        ' Refresh after every pass.
+        ' This is critical because once one finishing op is scheduled,
+        ' the next downstream op becomes eligible.
+        Dim routingDt As DataTable = readOrderTable(preactor)
 
-            Dim queue As List(Of PostFiringScheduler.QueueItem) =
-            postFiring.BuildQueue(preactor, planningboard, routingDt, "KILNACK")
+        Dim queue As List(Of PostFiringScheduler.QueueItem) =
+        postFiring.BuildQueue(preactor, planningboard, routingDt, "KILNACK")
 
-            If queue.Count = 0 Then Exit Do
+        If queue.Count = 0 Then Return 0
+        'For oprec As Integer = 0 To queue.Count - 1
+        For Each item As PostFiringScheduler.QueueItem In queue
+            Dim oprec As Integer = item.NextOpRec
+            While (oprec > 0)
 
-            scheduledThisPass = postFiring.ScheduleQueue(preactor, planningboard, queue)
+                ' Find all valid alternate resources for this operation.
+                ResRecs = planningboard.FindResources(oprec)
 
-            totalScheduled += scheduledThisPass
-            passNo += 1
+                ' Track the best (earliest) feasible candidate we find.
+                Dim bestResRec As Integer = 0
+                Dim bestOpTimes As Nullable(Of Preactor.OperationTimes) = Nothing
 
-        Loop While scheduledThisPass > 0 AndAlso passNo < 20
+                ' Loop through *all* alternate resources and test feasibility on each.
+                For Each ResRec In ResRecs
 
-        System.Diagnostics.Debug.WriteLine("PostFiring completed. TotalScheduled=" &
-                                       totalScheduled &
-                                       ", Passes=" & passNo)
+                    ' Test if the operation can be placed on this resource, and get the timing result.
+                    ' TerminatorTime is the boundary between schedule history and schedule future;
+                    ' using it here aligns with "schedule as soon as possible" in the future horizon. :contentReference[oaicite:3]{index=3}
+                    opTimes = planningboard.TestOperationOnResource(oprec, ResRec, planningboard.TerminatorTime)
+
+                    If opTimes.HasValue Then
+                        ' This resource is feasible. Compare it to the current best candidate.
+                        ' We want the earliest possible start time (ChangeStart).
+                        If (Not bestOpTimes.HasValue) Then
+                            ' First feasible candidate becomes the best by default.
+                            bestResRec = ResRec
+                            bestOpTimes = opTimes
+                        Else
+                            ' Replace best candidate if this one starts earlier.
+                            If opTimes.Value.ChangeStart < bestOpTimes.Value.ChangeStart Then
+                                bestResRec = ResRec
+                                bestOpTimes = opTimes
+                            End If
+                        End If
+                    End If
+
+                Next ' evaluate next alternate resource
+
+                ' After scanning all alternates:
+                If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
+                    ' Load the operation onto the resource that gives the earliest feasible start.
+                    planningboard.PutOperationOnResource(oprec, bestResRec, bestOpTimes.Value.ChangeStart)
+                Else
+                    ' No feasible resource was found.
+                    ' Practical meaning:
+                    '   - This operation cannot be scheduled on any alternate resource at/after the terminator boundary
+                    '     under current constraints (calendars, setups, secondary constraints, etc.).
+                    ' Leave it unscheduled (or handle with a custom queue / reason code if your design requires).
+                End If
+
+                ' Move to the next operation in the routing chain.
+                oprec = planningboard.GetNextOperation(oprec, 1) ' API-supported routing traversal:contentReference[oaicite:4]{index=4}
+
+            End While ' next operation in chain
+
+        Next
+        'scheduledThisPass = postFiring.ScheduleQueue(preactor, planningboard, queue)
+
+        'totalScheduled += scheduledThisPass
+        'passNo += 1
+
+        'Loop While scheduledThisPass > 0 AndAlso passNo < 20
+        'System.Diagnostics.Debug.WriteLine("PostFiring completed. TotalScheduled=" &
+        '                               totalScheduled &
+        '                               ", Passes=" & passNo)
 
         preactor.DestroyStatus()
         Return 0
