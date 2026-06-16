@@ -60,11 +60,28 @@ Public Class AlgoSeq4
             firingObj.ExportFiringCandidateDebug(routingDt, debugFolder)
         End If
 
+        Dim batchKilnNames As New List(Of String) From {
+        "AKLN", "BKLN", "CKLN", "DKLN", "RKLN", "NKLN"
+        }
+
+        Dim batchInitialAvailability As Dictionary(Of String, DateTime) =
+        SharedHelpers.BuildEffectiveStartByResourceFromGnKilnAvailability(preactor,
+                                                                      planningboard,
+                                                                      batchKilnNames)
         ' Build firing plan using firing optimizer
-        Dim plan = firingObj.BuildBatchKilnPlan(routingDt, configDir & "\kilndata.csv", currentDate, minOcc, maxOcc,
-                                            allowUnderfilledTail:=True,
-                                            batchStartDelayMins:=60,
-                                            maxBatchesPerDayGlobal:=2)
+        'Dim plan = firingObj.BuildBatchKilnPlan(routingDt, configDir & "\kilndata.csv", currentDate, minOcc, maxOcc,
+        '                                    allowUnderfilledTail:=True,
+        '                                    batchStartDelayMins:=60,
+        '                                    maxBatchesPerDayGlobal:=2)
+        Dim plan = firingObj.BuildBatchKilnPlan(routingDt,
+                                        configDir & "\kilndata.csv",
+                                        currentDate,
+                                        minOcc,
+                                        maxOcc,
+                                        allowUnderfilledTail:=True,
+                                        batchStartDelayMins:=60,
+                                        maxBatchesPerDayGlobal:=2,
+                                        initialKilnAvailability:=batchInitialAvailability)
 
         ' Debugger
         If enableDebugExport Then
@@ -311,7 +328,15 @@ Public Class AlgoSeq4
         Dim routingDt As DataTable = readOrderTable(preactor)
         Dim currentDate As DateTime = planningboard.TerminatorTime
 
-        ' ------------------------------------------------------------
+        Dim swkMetadataDate As DateTime =
+        SharedHelpers.ReadOptimizerSettingDate(preactor,
+                                           "SWBKILN Available From",
+                                           DateTime.MinValue)
+
+        Dim swkStart As DateTime =
+        SharedHelpers.GetEffectiveStartFromGnKilnAvailability(preactor,
+                                                          planningboard,
+                                                          "SWBKILN")        ' ------------------------------------------------------------
         ' SWK verified parameters
         ' ------------------------------------------------------------
         Dim swkMinTonnage As Double = 0.8
@@ -343,7 +368,7 @@ Public Class AlgoSeq4
 
         Dim plan As swkOptimizer_vf.SwkBatchPlan =
         swkObj.BuildSwkPlan(routingDt,
-                            currentDate,
+                            swkStart,
                             swkMinTonnage,
                             swkMaxTonnage,
                             dailyBatchLimit:=swkDailyBatchLimit,
@@ -500,11 +525,21 @@ Public Class AlgoSeq4
         Dim KILNACK As Integer = planningboard.GetResourceNumber("KILNACK")
         Dim FTDSD20 As Integer = planningboard.GetResourceNumber("FTDSD20")
 
+        Dim tunnelMetadataDate As DateTime =
+        SharedHelpers.ReadOptimizerSettingDate(preactor,
+                                           "TCBK Available From",
+                                           DateTime.MinValue)
+
+        Dim tunnelStart As DateTime =
+        SharedHelpers.GetEffectiveStartFromGnKilnAvailability(preactor,
+                                                          planningboard,
+                                                          "TCBK")
+
         Dim tunnelObj As New tunnelOptimizer_vf()
 
         Dim plan = tunnelObj.BuildTunnelPlan(
         routingDt,
-        startTime:=currentDate,
+        startTime:=tunnelStart,
         cartsPerDay:=cartsPerDay,
         totalCarts:=totalCartsAvailable,
         minOccPreferred:=minOccPreferred,

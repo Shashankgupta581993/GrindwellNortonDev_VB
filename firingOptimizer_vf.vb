@@ -75,7 +75,8 @@ Public Class firingOptimizer_vf
                                            maxOcc As Double,
                                            Optional allowUnderfilledTail As Boolean = True,
                                            Optional batchStartDelayMins As Integer = 0,
-                                           Optional maxBatchesPerDayGlobal As Integer = 2) As FiringBatchPlan
+                                           Optional maxBatchesPerDayGlobal As Integer = 2,
+                                           Optional initialKilnAvailability As Dictionary(Of String, DateTime) = Nothing) As FiringBatchPlan
 
 
         ValidateInputs(dt, minOcc, maxOcc)
@@ -90,9 +91,21 @@ Public Class firingOptimizer_vf
         Dim candidates As List(Of OrderCandidate) = BuildCandidates(dt)
 
         ' Initialize kiln availability
+        'Dim kilnAvail As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+        'For Each k As String In kilnSupport.Keys
+        '    kilnAvail(k) = startTime
+        'Next
+
         Dim kilnAvail As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+
         For Each k As String In kilnSupport.Keys
-            kilnAvail(k) = startTime
+
+            If initialKilnAvailability IsNot Nothing AndAlso initialKilnAvailability.ContainsKey(k) Then
+                kilnAvail(k) = initialKilnAvailability(k)
+            Else
+                kilnAvail(k) = startTime
+            End If
+
         Next
 
         ' Assign batches iteratively

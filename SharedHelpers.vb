@@ -338,7 +338,129 @@ Public Module SharedHelpers
 
         Return lastEnd
     End Function
+    Public Function BuildEffectiveStartByResource(preactor As IPreactor,
+                                              planningboard As IPlanningBoard,
+                                              resourceNames As IEnumerable(Of String),
+                                              Optional metadataDates As Dictionary(Of String, DateTime) = Nothing) As Dictionary(Of String, DateTime)
 
+        Dim result As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+
+        For Each resourceName As String In resourceNames
+
+            If String.IsNullOrWhiteSpace(resourceName) Then Continue For
+
+            Dim metadataDate As DateTime = DateTime.MinValue
+
+            If metadataDates IsNot Nothing AndAlso metadataDates.ContainsKey(resourceName) Then
+                metadataDate = metadataDates(resourceName)
+            End If
+
+            result(resourceName) =
+            GetEffectiveResourceStart(preactor, planningboard, resourceName, metadataDate)
+
+        Next
+
+        Return result
+
+    End Function
+    Public Function GetEffectiveResourceStart(preactor As IPreactor,
+                                          planningboard As IPlanningBoard,
+                                          resourceName As String,
+                                          Optional metadataAvailableFrom As DateTime = Nothing) As DateTime
+
+        If preactor Is Nothing Then Throw New ArgumentNullException(NameOf(preactor))
+        If planningboard Is Nothing Then Throw New ArgumentNullException(NameOf(planningboard))
+        If String.IsNullOrWhiteSpace(resourceName) Then Throw New ArgumentException("Resource name is blank.")
+
+        Dim terminator As DateTime = planningboard.TerminatorTime
+
+        Dim resourceRec As Integer = planningboard.GetResourceNumber(resourceName)
+        If resourceRec <= 0 Then
+            Throw New Exception("Resource not found: " & resourceName)
+        End If
+
+        Dim lastScheduledEnd As DateTime = DateTime.MinValue
+
+        Dim lastEndNullable As Nullable(Of DateTime) =
+        GetResourceLastScheduledEnd(preactor, planningboard, resourceRec)
+
+        If lastEndNullable.HasValue Then
+            lastScheduledEnd = lastEndNullable.Value
+        End If
+
+        Dim metadataDate As DateTime = metadataAvailableFrom
+
+        Dim effective As DateTime =
+        MaxDate(terminator, metadataDate, lastScheduledEnd)
+
+        System.Diagnostics.Debug.WriteLine(
+        "Effective Resource Start | Resource=" & resourceName &
+        " | Terminator=" & FormatDateOrBlank(terminator) &
+        " | Metadata=" & FormatDateOrBlank(metadataDate) &
+        " | LastScheduledEnd=" & FormatDateOrBlank(lastScheduledEnd) &
+        " | Effective=" & FormatDateOrBlank(effective)
+    )
+
+        Return effective
+
+    End Function
+    Public Function ReadOptimizerSettingDate(preactor As IPreactor,
+                                         parameterName As String,
+                                         Optional defaultValue As DateTime = Nothing) As DateTime
+
+        If preactor Is Nothing Then Throw New ArgumentNullException(NameOf(preactor))
+        If String.IsNullOrWhiteSpace(parameterName) Then Return defaultValue
+
+        Dim settingsFmt As Integer = preactor.GetFormatNumber("GN Optimizer Settings")
+        If settingsFmt <= 0 Then Return defaultValue
+
+        Dim parameterField As Integer = preactor.GetFieldNumber(settingsFmt, "Parameter")
+        Dim dateField As Integer = preactor.GetFieldNumber(settingsFmt, "Date Value")
+
+        If parameterField <= 0 OrElse dateField <= 0 Then Return defaultValue
+
+        For rec As Integer = 1 To preactor.RecordCount(settingsFmt)
+
+            Dim p As String = preactor.ReadFieldString(settingsFmt, parameterField, rec).Trim()
+
+            If p.Equals(parameterName, StringComparison.OrdinalIgnoreCase) Then
+
+                Dim d As DateTime = preactor.ReadFieldDateTime(settingsFmt, dateField, rec)
+
+                If d = DateTime.MinValue Then Return defaultValue
+                Return d
+
+            End If
+
+        Next
+
+        Return defaultValue
+
+    End Function
+
+    Public Function BuildMetadataAvailabilityByResource(preactor As IPreactor,
+                                                    resourceNames As IEnumerable(Of String)) As Dictionary(Of String, DateTime)
+
+        Dim result As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+
+        For Each resourceName As String In resourceNames
+
+            If String.IsNullOrWhiteSpace(resourceName) Then Continue For
+
+            Dim d As DateTime =
+            ReadOptimizerSettingDate(preactor,
+                                     resourceName & " Available From",
+                                     DateTime.MinValue)
+
+            If d <> DateTime.MinValue Then
+                result(resourceName) = d
+            End If
+
+        Next
+
+        Return result
+
+    End Function
     ' Minimal CSV escape: wrap in quotes if it contains comma or quote; double quotes inside.
     Public Function CsvEscape(value As String) As String
         If value Is Nothing Then Return ""
@@ -346,5 +468,17 @@ Public Module SharedHelpers
         If value.Contains("""") Then value = value.Replace("""", """""")
         If mustQuote Then Return $"""{value}"""
         Return value
+    End Function
+
+    Public Function MaxDate(ParamArray dates() As DateTime) As DateTime
+
+        Dim result As DateTime = DateTime.MinValue
+
+        For Each d As DateTime In dates
+            If d > result Then result = d
+        Next
+
+        Return result
+
     End Function
 End Module
