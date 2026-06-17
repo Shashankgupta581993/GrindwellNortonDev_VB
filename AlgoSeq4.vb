@@ -325,13 +325,14 @@ Public Class AlgoSeq4
 
         Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
 
+
         Dim routingDt As DataTable = readOrderTable(preactor)
         Dim currentDate As DateTime = planningboard.TerminatorTime
 
-        Dim swkMetadataDate As DateTime =
-        SharedHelpers.ReadOptimizerSettingDate(preactor,
-                                           "SWBKILN Available From",
-                                           DateTime.MinValue)
+        'Dim swkMetadataDate As DateTime =
+        'SharedHelpers.ReadOptimizerSettingDate(preactor,
+        '                                   "SWBKILN Available From",
+        'DateTime.MinValue)
 
         Dim swkStart As DateTime =
         SharedHelpers.GetEffectiveStartFromGnKilnAvailability(preactor,
@@ -525,10 +526,10 @@ Public Class AlgoSeq4
         Dim KILNACK As Integer = planningboard.GetResourceNumber("KILNACK")
         Dim FTDSD20 As Integer = planningboard.GetResourceNumber("FTDSD20")
 
-        Dim tunnelMetadataDate As DateTime =
-        SharedHelpers.ReadOptimizerSettingDate(preactor,
-                                           "TCBK Available From",
-                                           DateTime.MinValue)
+        'Dim tunnelMetadataDate As DateTime =
+        'SharedHelpers.ReadOptimizerSettingDate(preactor,
+        '                                  "TCBK Available From",
+        'DateTime.MinValue)
 
         Dim tunnelStart As DateTime =
         SharedHelpers.GetEffectiveStartFromGnKilnAvailability(preactor,

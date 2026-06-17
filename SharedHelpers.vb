@@ -481,4 +481,215 @@ Public Module SharedHelpers
         Return result
 
     End Function
+
+    Public Function BuildGnKilnToResourceMap(preactor As IPreactor) As Dictionary(Of String, String)
+
+        Dim result As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+
+        Dim fmt As Integer = preactor.GetFormatNumber("GN Kilns")
+        If fmt <= 0 Then Return result
+
+        Dim nameField As Integer = preactor.GetFieldNumber(fmt, "Name")
+        Dim resourceField As Integer = preactor.GetFieldNumber(fmt, "Resource Name")
+        Dim activeField As Integer = preactor.GetFieldNumber(fmt, "Active")
+
+        For rec As Integer = 1 To preactor.RecordCount(fmt)
+
+            If activeField > 0 AndAlso preactor.ReadFieldInt(fmt, activeField, rec) = 0 Then
+                Continue For
+            End If
+
+            Dim kilnName As String = preactor.ReadFieldString(fmt, nameField, rec).Trim()
+            Dim resourceName As String = preactor.ReadFieldString(fmt, resourceField, rec).Trim()
+
+            If kilnName = "" Then Continue For
+            If resourceName = "" Then resourceName = kilnName
+
+            result(kilnName) = resourceName
+            result(resourceName) = resourceName
+
+        Next
+
+        Return result
+
+    End Function
+    Public Function BuildMetadataAvailabilityFromGnKilnAvailability(preactor As IPreactor,
+                                                                resourceNames As IEnumerable(Of String),
+                                                                baseTime As DateTime) As Dictionary(Of String, DateTime)
+
+        Dim result As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+
+        Dim targetResources As New HashSet(Of String)(resourceNames, StringComparer.OrdinalIgnoreCase)
+        Dim kilnToResource As Dictionary(Of String, String) = BuildGnKilnToResourceMap(preactor)
+
+        Dim fmt As Integer = preactor.GetFormatNumber("GN Kiln Availability")
+        If fmt <= 0 Then Return result
+
+        Dim kilnField As Integer = preactor.GetFieldNumber(fmt, "Kiln")
+        Dim statusField As Integer = preactor.GetFieldNumber(fmt, "Availability Status")
+        Dim availableFromField As Integer = preactor.GetFieldNumber(fmt, "Available From")
+        Dim availableUntilField As Integer = preactor.GetFieldNumber(fmt, "Available Until")
+        Dim overrideStartField As Integer = preactor.GetFieldNumber(fmt, "Override Start Time")
+        Dim overrideEndField As Integer = preactor.GetFieldNumber(fmt, "Override End Time")
+        Dim activeField As Integer = preactor.GetFieldNumber(fmt, "Active")
+
+        For rec As Integer = 1 To preactor.RecordCount(fmt)
+
+            If activeField > 0 AndAlso preactor.ReadFieldInt(fmt, activeField, rec) = 0 Then
+                Continue For
+            End If
+
+            Dim kilnName As String = preactor.ReadFieldString(fmt, kilnField, rec).Trim()
+            If kilnName = "" Then Continue For
+
+            Dim resourceName As String = kilnName
+
+            If kilnToResource.ContainsKey(kilnName) Then
+                resourceName = kilnToResource(kilnName)
+            End If
+
+            If Not targetResources.Contains(resourceName) Then Continue For
+
+            Dim status As String = preactor.ReadFieldString(fmt, statusField, rec).Trim().ToUpperInvariant()
+
+            Dim availableFrom As DateTime = preactor.ReadFieldDateTime(fmt, availableFromField, rec)
+            Dim availableUntil As DateTime = preactor.ReadFieldDateTime(fmt, availableUntilField, rec)
+            Dim overrideStart As DateTime = preactor.ReadFieldDateTime(fmt, overrideStartField, rec)
+            Dim overrideEnd As DateTime = preactor.ReadFieldDateTime(fmt, overrideEndField, rec)
+
+            Dim metadataStart As DateTime =
+                ResolveGnKilnAvailabilityStart(status,
+                                               availableFrom,
+                                               availableUntil,
+                                               overrideStart,
+                                               overrideEnd,
+                                               baseTime)
+
+            If metadataStart = DateTime.MinValue Then Continue For
+
+            If Not result.ContainsKey(resourceName) OrElse metadataStart > result(resourceName) Then
+                result(resourceName) = metadataStart
+            End If
+
+        Next
+
+        Return result
+
+    End Function
+    Public Function ResolveGnKilnAvailabilityStart(status As String,
+                                               availableFrom As DateTime,
+                                               availableUntil As DateTime,
+                                               overrideStart As DateTime,
+                                               overrideEnd As DateTime,
+                                               baseTime As DateTime) As DateTime
+
+        Dim result As DateTime = DateTime.MinValue
+
+        Dim normalizedStatus As String = If(status, "").Trim().ToUpperInvariant()
+
+        ' 1. Normal available-from date.
+        If availableFrom <> DateTime.MinValue AndAlso availableFrom > baseTime Then
+            result = MaxDate(result, availableFrom)
+        End If
+
+        ' 2. Manual override start behaves as a stronger start anchor.
+        If overrideStart <> DateTime.MinValue AndAlso overrideStart > baseTime Then
+            result = MaxDate(result, overrideStart)
+        End If
+
+        ' 3. If resource is currently unavailable/down/maintenance,
+        ' release it from Available Until or Override End.
+        If normalizedStatus <> "" AndAlso normalizedStatus <> "AVAILABLE" Then
+
+            If availableUntil <> DateTime.MinValue AndAlso availableUntil > baseTime Then
+                result = MaxDate(result, availableUntil)
+            End If
+
+            If overrideEnd <> DateTime.MinValue AndAlso overrideEnd > baseTime Then
+                result = MaxDate(result, overrideEnd)
+            End If
+
+        End If
+
+        ' 4. If we are currently inside an override window, release at override end.
+        If overrideStart <> DateTime.MinValue AndAlso
+           overrideEnd <> DateTime.MinValue AndAlso
+           overrideStart <= baseTime AndAlso
+           overrideEnd > baseTime Then
+
+            result = MaxDate(result, overrideEnd)
+
+        End If
+
+        Return result
+
+    End Function
+    Public Function BuildEffectiveStartByResourceFromGnKilnAvailability(preactor As IPreactor,
+                                                                    planningboard As IPlanningBoard,
+                                                                    resourceNames As IEnumerable(Of String)) As Dictionary(Of String, DateTime)
+
+        Dim result As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+
+        Dim terminator As DateTime = planningboard.TerminatorTime
+
+        Dim metadataDates As Dictionary(Of String, DateTime) =
+            BuildMetadataAvailabilityFromGnKilnAvailability(preactor,
+                                                            resourceNames,
+                                                            terminator)
+
+        For Each resourceName As String In resourceNames
+
+            If String.IsNullOrWhiteSpace(resourceName) Then Continue For
+
+            Dim resourceRec As Integer = planningboard.GetResourceNumber(resourceName)
+            If resourceRec <= 0 Then
+                Throw New Exception("Resource not found: " & resourceName)
+            End If
+
+            Dim metadataDate As DateTime = DateTime.MinValue
+            If metadataDates.ContainsKey(resourceName) Then
+                metadataDate = metadataDates(resourceName)
+            End If
+
+            Dim lastScheduledEnd As DateTime = DateTime.MinValue
+
+            Dim lastEndNullable As Nullable(Of DateTime) =
+                GetResourceLastScheduledEnd(preactor, planningboard, resourceRec)
+
+            If lastEndNullable.HasValue Then
+                lastScheduledEnd = lastEndNullable.Value
+            End If
+
+            Dim effectiveStart As DateTime =
+                MaxDate(terminator, metadataDate, lastScheduledEnd)
+
+            result(resourceName) = effectiveStart
+
+            System.Diagnostics.Debug.WriteLine(
+                "GN Availability | Resource=" & resourceName &
+                " | Terminator=" & FormatDateOrBlank(terminator) &
+                " | Metadata=" & FormatDateOrBlank(metadataDate) &
+                " | LastScheduledEnd=" & FormatDateOrBlank(lastScheduledEnd) &
+                " | EffectiveStart=" & FormatDateOrBlank(effectiveStart)
+            )
+
+        Next
+
+        Return result
+
+    End Function
+    Public Function GetEffectiveStartFromGnKilnAvailability(preactor As IPreactor,
+                                                        planningboard As IPlanningBoard,
+                                                        resourceName As String) As DateTime
+
+        Dim names As New List(Of String) From {resourceName}
+
+        Dim dict As Dictionary(Of String, DateTime) =
+            BuildEffectiveStartByResourceFromGnKilnAvailability(preactor,
+                                                                planningboard,
+                                                                names)
+
+        Return dict(resourceName)
+
+    End Function
 End Module
