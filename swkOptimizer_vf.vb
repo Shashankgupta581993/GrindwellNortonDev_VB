@@ -61,6 +61,9 @@ Public Class swkOptimizer_vf
         Public Property LoadMins As Integer
 
         Public Property PrevOpIsScheduled As Boolean
+
+        Public Property WipScore As Integer
+        Public Property WipRejectReason As String
     End Class
 
     Private Class SwkBatchCandidate
@@ -229,6 +232,11 @@ Public Class swkOptimizer_vf
             If opNo <> 300 Then Continue For
 
             If SharedHelpers.SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
+            Dim wipStatus As String = SharedHelpers.SafeStr(r("wip_status")).Trim()
+            If Not wipStatus.Equals("Candidate", StringComparison.OrdinalIgnoreCase) Then Continue For
+
+            Dim wipScore As Integer = SharedHelpers.SafeInt(r("wip_score"))
+            Dim wipRejectReason As String = SharedHelpers.SafeStr(r("wip_reject_reason"))
 
             Dim cycle As String = NormalizeCycle(SharedHelpers.SafeStr(r(COL_CYCLE)))
             If cycle = SWK_FUTURE_FILLER_CYCLE Then Continue For
@@ -270,8 +278,9 @@ Public Class swkOptimizer_vf
                 .Tonnage = tonnage,
                 .FireMins = fireMins,
                 .LoadMins = loadMins,
-                .PrevOpIsScheduled = prevScheduled
-            })
+                .PrevOpIsScheduled = prevScheduled,
+                .WipScore = wipScore,
+                .WipRejectReason = wipRejectReason})
 
         Next
 
@@ -391,9 +400,12 @@ Public Class swkOptimizer_vf
         Dim list As New List(Of SwkCandidate)(input)
 
         list.Sort(Function(a, b)
-                      If a.PrevOpIsScheduled <> b.PrevOpIsScheduled Then
-                          If a.PrevOpIsScheduled Then Return -1 Else Return 1
-                      End If
+                      'If a.PrevOpIsScheduled <> b.PrevOpIsScheduled Then
+                      '    If a.PrevOpIsScheduled Then Return -1 Else Return 1
+                      'End If
+
+                      Dim w As Integer = b.WipScore.CompareTo(a.WipScore)
+                      If w <> 0 Then Return w
 
                       Dim c As Integer = a.DueTime.CompareTo(b.DueTime)
                       If c <> 0 Then Return c

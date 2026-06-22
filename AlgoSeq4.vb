@@ -105,6 +105,7 @@ Public Class AlgoSeq4
 
             ' 3. Optimization: Replace slow Select Case with instant Dictionary lookup
             If kilnResources.TryGetValue(kilnName, kilnResId) Then
+                If planningboard.IsOperationScheduled(firingOpRec) Then Continue For
                 planningboard.PutOperationOnResource(firingOpRec, kilnResId, batchStart)
             End If
 
@@ -399,6 +400,7 @@ Public Class AlgoSeq4
             Dim firingTimes As OperationTimes? =
             planningboard.TestOperationOnResource(firingOpRec, SWBKILN, batchStart)
 
+            If planningboard.IsOperationScheduled(firingOpRec) Then Continue For
             'If firingTimes.HasValue Then
             planningboard.PutOperationOnResource(firingOpRec,
                                                  SWBKILN,
@@ -568,6 +570,7 @@ Public Class AlgoSeq4
             ' 3. Optimization: Calculate the 2-hour offset once per iteration
             batchStartOffset = batchstart.AddHours(2)
 
+            If planningboard.IsOperationScheduled(firingOpRec) Then Continue For
             preactor.WriteField(ordersTable, BATCHTIME, firingOpRec, batchTimeValue)
             planningboard.PutOperationOnResource(firingOpRec, TCBK, batchStartOffset)
 
@@ -928,89 +931,14 @@ Public Class AlgoSeq4
 
         Dim postFiring As New PostFiringScheduler()
 
-        Dim passNo As Integer = 0
-        Dim scheduledThisPass As Integer = 0
-        Dim totalScheduled As Integer = 0
-        'Dim opRec As Integer
-        Dim ResRec As Integer
-        Dim ResRecs As IEnumerable(Of Integer)
-        Dim opTimes As Nullable(Of Preactor.OperationTimes)
-
-        'Do
-        ' Refresh after every pass.
-        ' This is critical because once one finishing op is scheduled,
-        ' the next downstream op becomes eligible.
         Dim routingDt As DataTable = readOrderTable(preactor)
 
         Dim queue As List(Of PostFiringScheduler.QueueItem) =
         postFiring.BuildQueue(preactor, planningboard, routingDt, "KILNACK")
 
-        If queue.Count = 0 Then Return 0
-        'For oprec As Integer = 0 To queue.Count - 1
-        For Each item As PostFiringScheduler.QueueItem In queue
-            Dim oprec As Integer = item.NextOpRec
-            While (oprec > 0)
-
-                ' Find all valid alternate resources for this operation.
-                ResRecs = planningboard.FindResources(oprec)
-
-                ' Track the best (earliest) feasible candidate we find.
-                Dim bestResRec As Integer = 0
-                Dim bestOpTimes As Nullable(Of Preactor.OperationTimes) = Nothing
-
-                ' Loop through *all* alternate resources and test feasibility on each.
-                For Each ResRec In ResRecs
-
-                    ' Test if the operation can be placed on this resource, and get the timing result.
-                    ' TerminatorTime is the boundary between schedule history and schedule future;
-                    ' using it here aligns with "schedule as soon as possible" in the future horizon. :contentReference[oaicite:3]{index=3}
-                    opTimes = planningboard.TestOperationOnResource(oprec, ResRec, planningboard.TerminatorTime)
-
-                    If opTimes.HasValue Then
-                        ' This resource is feasible. Compare it to the current best candidate.
-                        ' We want the earliest possible start time (ChangeStart).
-                        If (Not bestOpTimes.HasValue) Then
-                            ' First feasible candidate becomes the best by default.
-                            bestResRec = ResRec
-                            bestOpTimes = opTimes
-                        Else
-                            ' Replace best candidate if this one starts earlier.
-                            If opTimes.Value.ChangeStart < bestOpTimes.Value.ChangeStart Then
-                                bestResRec = ResRec
-                                bestOpTimes = opTimes
-                            End If
-                        End If
-                    End If
-
-                Next ' evaluate next alternate resource
-
-                ' After scanning all alternates:
-                If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
-                    ' Load the operation onto the resource that gives the earliest feasible start.
-                    planningboard.PutOperationOnResource(oprec, bestResRec, bestOpTimes.Value.ChangeStart)
-                Else
-                    ' No feasible resource was found.
-                    ' Practical meaning:
-                    '   - This operation cannot be scheduled on any alternate resource at/after the terminator boundary
-                    '     under current constraints (calendars, setups, secondary constraints, etc.).
-                    ' Leave it unscheduled (or handle with a custom queue / reason code if your design requires).
-                End If
-
-                ' Move to the next operation in the routing chain.
-                oprec = planningboard.GetNextOperation(oprec, 1) ' API-supported routing traversal:contentReference[oaicite:4]{index=4}
-
-            End While ' next operation in chain
-
-        Next
-        'scheduledThisPass = postFiring.ScheduleQueue(preactor, planningboard, queue)
-
-        'totalScheduled += scheduledThisPass
-        'passNo += 1
-
-        'Loop While scheduledThisPass > 0 AndAlso passNo < 20
-        'System.Diagnostics.Debug.WriteLine("PostFiring completed. TotalScheduled=" &
-        '                               totalScheduled &
-        '                               ", Passes=" & passNo)
+        If queue.Count > 0 Then
+            postFiring.ScheduleQueue(preactor, planningboard, queue)
+        End If
 
         preactor.DestroyStatus()
         Return 0
@@ -1179,6 +1107,7 @@ Public Class AlgoSeq4
 
                     ' After scanning all alternates:
                     If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
+                        If planningboard.IsOperationScheduled(opRec) Then Exit While
                         ' Load the operation onto the resource that gives the earliest feasible start.
                         planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
                         Try

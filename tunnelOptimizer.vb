@@ -79,6 +79,8 @@ Public Class tunnelOptimizer_vf
         Public Property ReadyTime As DateTime
         Public Property DueTime As DateTime
         Public Property Occ As Double
+        Public Property WipScore As Integer
+        Public Property WipRejectReason As String
     End Class
 
     ' -----------------------------
@@ -213,6 +215,8 @@ Public Class tunnelOptimizer_vf
         For Each r As DataRow In dt.Rows
             If Not SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
 
+            ' Area that I did not add the code for WIP. 
+
             Dim opNo As Integer = SafeInt(r(COL_OPNO))
             If opNo >= 290 Then Continue For
 
@@ -240,6 +244,13 @@ Public Class tunnelOptimizer_vf
 
             If SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
 
+            Dim wipStatus As String = SharedHelpers.SafeStr(r("wip_status")).Trim()
+            If Not wipStatus.Equals("Candidate", StringComparison.OrdinalIgnoreCase) Then Continue For
+
+            Dim wipScore As Integer = SharedHelpers.SafeInt(r("wip_score"))
+            Dim wipRejectReason As String = SharedHelpers.SafeStr(r("wip_reject_reason"))
+
+
             Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
             If orderNo = "" Then Continue For
 
@@ -262,7 +273,9 @@ Public Class tunnelOptimizer_vf
                 .FiringOpRec = firingOpRec,
                 .ReadyTime = ready,
                 .DueTime = due,
-                .Occ = occ
+                .Occ = occ,
+                .WipScore = wipScore,
+                .WipRejectReason = wipRejectReason
             })
         Next
 
@@ -362,6 +375,9 @@ Public Class tunnelOptimizer_vf
         RequireColumn(dt, COL_SCHED_END)
         RequireColumn(dt, COL_FIRING_DUE)
         RequireColumn(dt, COL_OCC)
+        RequireColumn(dt, "wip_status")
+        RequireColumn(dt, "wip_score")
+        RequireColumn(dt, "wip_reject_reason")
     End Sub
 
     Private Sub RequireColumn(dt As DataTable, name As String)
@@ -370,12 +386,24 @@ Public Class tunnelOptimizer_vf
         End If
     End Sub
 
+    'Private Shared Function CompareByDueReadyOcc(a As TunnelCandidate, b As TunnelCandidate) As Integer
+    '    Dim c As Integer = a.DueTime.CompareTo(b.DueTime)
+    '    If c <> 0 Then Return c
+    '    c = a.ReadyTime.CompareTo(b.ReadyTime)
+    '    If c <> 0 Then Return c
+    '    ' larger occupancy first
+    '    Return (-a.Occ.CompareTo(b.Occ))
+    'End Function
     Private Shared Function CompareByDueReadyOcc(a As TunnelCandidate, b As TunnelCandidate) As Integer
+        Dim w As Integer = b.WipScore.CompareTo(a.WipScore)
+        If w <> 0 Then Return w
+
         Dim c As Integer = a.DueTime.CompareTo(b.DueTime)
         If c <> 0 Then Return c
+
         c = a.ReadyTime.CompareTo(b.ReadyTime)
         If c <> 0 Then Return c
-        ' larger occupancy first
+
         Return (-a.Occ.CompareTo(b.Occ))
     End Function
 

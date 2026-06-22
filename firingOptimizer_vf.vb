@@ -403,6 +403,12 @@ Public Class firingOptimizer_vf
             Dim isScheduled As Boolean = SafeBool(r(COL_IS_SCHEDULED))
             If isScheduled Then Continue For
 
+            Dim wipStatus As String = SharedHelpers.SafeStr(r("wip_status")).Trim()
+            If Not wipStatus.Equals("Candidate", StringComparison.OrdinalIgnoreCase) Then Continue For
+
+            Dim wipScore As Integer = SharedHelpers.SafeInt(r("wip_score"))
+            Dim wipRejectReason As String = SharedHelpers.SafeStr(r("wip_reject_reason"))
+
             Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
             If orderNo = "" Then Continue For
 
@@ -454,8 +460,9 @@ Public Class firingOptimizer_vf
             .DueTime = firingDue,
             .FireMins = fireMins,
             .LoadMins = loadMins,
-            .PrevOpIsScheduled = prevScheduled
-        })
+            .PrevOpIsScheduled = prevScheduled,
+            .WipScore = wipScore,
+            .WipRejectReason = wipRejectReason})
         Next
 
         Return list
@@ -874,9 +881,8 @@ Public Class firingOptimizer_vf
     Private Function SortByDueThenOccThenReady(list As List(Of OrderCandidate)) As List(Of OrderCandidate)
         list.Sort(Function(a, b)
                       ' 0) NEW – WIP reduction: prefer orders whose previous op is already scheduled
-                      If a.PrevOpIsScheduled <> b.PrevOpIsScheduled Then
-                          If a.PrevOpIsScheduled Then Return -1 Else Return 1
-                      End If
+                      Dim w = b.WipScore.CompareTo(a.WipScore)
+                      If w <> 0 Then Return w
 
                       ' 1) Earlier due date first
                       Dim c = a.DueTime.CompareTo(b.DueTime)
@@ -896,9 +902,8 @@ Public Class firingOptimizer_vf
     Private Function SortByDueThenReadyThenOcc(list As List(Of OrderCandidate)) As List(Of OrderCandidate)
         list.Sort(Function(a, b)
                       ' 0) NEW – WIP reduction: prefer orders whose previous op is already scheduled
-                      If a.PrevOpIsScheduled <> b.PrevOpIsScheduled Then
-                          If a.PrevOpIsScheduled Then Return -1 Else Return 1
-                      End If
+                      Dim w = b.WipScore.CompareTo(a.WipScore)
+                      If w <> 0 Then Return w
 
                       ' 1) Earlier due date first
                       Dim c = a.DueTime.CompareTo(b.DueTime)
@@ -1040,6 +1045,9 @@ Public Class firingOptimizer_vf
         SharedHelpers.RequireColumn(dt, COL_IS_SCHEDULED)
         SharedHelpers.RequireColumn(dt, COL_SCHED_END)
         SharedHelpers.RequireColumn(dt, COL_FIRING_DUE)
+        SharedHelpers.RequireColumn(dt, "wip_status")
+        SharedHelpers.RequireColumn(dt, "wip_score")
+        SharedHelpers.RequireColumn(dt, "wip_reject_reason")
     End Sub
 
     Public Function IsKnownCycle(c As String) As Boolean
@@ -1070,6 +1078,8 @@ Public Class firingOptimizer_vf
 
         ' NEW: True if previous operation (e.g. pressing / drying) is already scheduled
         Public Property PrevOpIsScheduled As Boolean
+        Public Property WipScore As Integer
+        Public Property WipRejectReason As String
     End Class
 
 

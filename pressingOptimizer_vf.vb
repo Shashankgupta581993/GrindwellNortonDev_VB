@@ -29,6 +29,10 @@
 
         Public Property PrevOpIsScheduled As Boolean     ' flag from prev_op_is_scheduled
         Public Property PrevOpPriority As Integer        ' 0 if PrevOpIsScheduled, 1 otherwise
+        Public Property WipScore As Integer
+        Public Property WipReadyTime As DateTime
+        Public Property WipStatus As String
+        Public Property WipRejectReason As String
     End Class
 
     ' ----------------------
@@ -46,6 +50,10 @@
         SharedHelpers.RequireColumn(dt, "parent_record")
         SharedHelpers.RequireColumn(dt, "is_scheduled")
         SharedHelpers.RequireColumn(dt, "prev_op_is_scheduled")
+        SharedHelpers.RequireColumn(dt, "wip_score")
+        SharedHelpers.RequireColumn(dt, "wip_ready_time")
+        SharedHelpers.RequireColumn(dt, "wip_status")
+        SharedHelpers.RequireColumn(dt, "wip_reject_reason")
         SharedHelpers.RequireColumn(dt, "Resource Group")
 
         SharedHelpers.RequireColumn(dt, "Operation Number")
@@ -110,8 +118,17 @@
             Dim cycleRank As Integer = GetCycleRank(cycleType)
 
             ' 9) Previous operation scheduled? (WIP reduction signal)
-            Dim prevOpIsScheduled As Boolean = SharedHelpers.SafeBool(r("prev_op_is_scheduled"))
+            'Dim prevOpIsScheduled As Boolean = SharedHelpers.SafeBool(r("prev_op_is_scheduled"))
+            'Dim prevOpPriority As Integer = If(prevOpIsScheduled, 0, 1)
+            Dim wipStatus As String = SharedHelpers.SafeStr(r("wip_status")).Trim()
+            If Not wipStatus.Equals("Candidate", StringComparison.OrdinalIgnoreCase) Then Continue For
+
+            Dim prevOpIsScheduled As Boolean = SharedHelpers.SafeBool(r("wip_prev_op_scheduled"))
             Dim prevOpPriority As Integer = If(prevOpIsScheduled, 0, 1)
+
+            Dim wipScore As Integer = SharedHelpers.SafeInt(r("wip_score"))
+            Dim wipReadyTime As DateTime = SharedHelpers.SafeDate(r("wip_ready_time"))
+            Dim wipRejectReason As String = SharedHelpers.SafeStr(r("wip_reject_reason"))
             ' 0 = “prev op is already scheduled” → better
             ' 1 = “prev op not scheduled / unknown” → slightly worse
 
@@ -128,7 +145,11 @@
             .MissingEarliest = missingEarliest,
             .MissingDue = missingDue,
             .PrevOpIsScheduled = prevOpIsScheduled,
-            .PrevOpPriority = prevOpPriority
+            .PrevOpPriority = prevOpPriority,
+            .WipScore = wipScore,
+            .WipReadyTime = wipReadyTime,
+            .WipStatus = wipStatus,
+            .WipRejectReason = wipRejectReason
         })
         Next
 
@@ -156,14 +177,22 @@
 
         If prioritizePrevOpFirst Then
             ' WIP-first strategy
-            sorted = candidates.OrderBy(Function(c) c.PrevOpPriority) _
-                           .ThenBy(Function(c) c.Tier) _
-                           .ThenBy(Function(c) If(c.MissingDue, DateTime.MaxValue, c.Due)) _
-                           .ThenBy(Function(c) If(c.MissingEarliest, DateTime.MaxValue, c.Earliest)) _
-                           .ThenByDescending(Function(c) c.CycleRank) _
-                           .ThenBy(Function(c) c.TypeKey) _
-                           .ThenBy(Function(c) c.ParentRecord) _
-                           .ToList()
+            'sorted = candidates.OrderBy(Function(c) c.PrevOpPriority) _
+            '               .ThenBy(Function(c) c.Tier) _
+            '               .ThenBy(Function(c) If(c.MissingDue, DateTime.MaxValue, c.Due)) _
+            '               .ThenBy(Function(c) If(c.MissingEarliest, DateTime.MaxValue, c.Earliest)) _
+            '               .ThenByDescending(Function(c) c.CycleRank) _
+            '               .ThenBy(Function(c) c.TypeKey) _
+            '               .ThenBy(Function(c) c.ParentRecord) _
+            '               .ToList()
+            sorted = candidates.OrderByDescending(Function(c) c.WipScore) _
+                   .ThenBy(Function(c) c.Tier) _
+                   .ThenBy(Function(c) If(c.MissingDue, DateTime.MaxValue, c.Due)) _
+                   .ThenBy(Function(c) If(c.MissingEarliest, DateTime.MaxValue, c.Earliest)) _
+                   .ThenByDescending(Function(c) c.CycleRank) _
+                   .ThenBy(Function(c) c.TypeKey) _
+                   .ThenBy(Function(c) c.ParentRecord) _
+                   .ToList()
         Else
             ' Due-date-first strategy (what we designed earlier)
             sorted = candidates.OrderBy(Function(c) c.Tier) _

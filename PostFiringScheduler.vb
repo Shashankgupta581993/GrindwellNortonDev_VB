@@ -18,6 +18,9 @@ Public Class PostFiringScheduler
         Public Property NextOpNo As Integer
         Public Property DueDate As DateTime
         Public Property Priority As Integer
+        Public Property WipScore As Integer
+        Public Property WipStatus As String
+        Public Property WipRejectReason As String
     End Class
 
     Public Function BuildQueue(preactor As IPreactor,
@@ -32,11 +35,24 @@ Public Class PostFiringScheduler
         RequireColumn(routingDt, "is_scheduled")
         RequireColumn(routingDt, "scheduled_end_time")
         RequireColumn(routingDt, "parent_record")
+        RequireColumn(routingDt, "wip_score")
+        RequireColumn(routingDt, "wip_status")
+        RequireColumn(routingDt, "wip_reject_reason")
 
         Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
         Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
+        Dim dueDateField As Integer = TryGetFieldNumber(preactor, ordersTable, "Due Date")
+        Dim priorityField As Integer = TryGetFieldNumber(preactor, ordersTable, "Priority")
 
         Dim queue As New List(Of QueueItem)()
+        Dim rowByOpRec As New Dictionary(Of Integer, DataRow)()
+
+        For Each row As DataRow In routingDt.Rows
+            Dim opRec As Integer = SafeInt(row("OrdersID"))
+            If opRec > 0 AndAlso Not rowByOpRec.ContainsKey(opRec) Then
+                rowByOpRec.Add(opRec, row)
+            End If
+        Next
 
         For Each r As DataRow In routingDt.Rows
 
@@ -65,27 +81,41 @@ Public Class PostFiringScheduler
                 Continue For
             End Try
 
+            Dim nextRow As DataRow = Nothing
+            If Not rowByOpRec.TryGetValue(nextOpRec, nextRow) Then Continue For
+
+            Dim wipStatus As String = SafeStr(nextRow("wip_status"))
+            Dim wipScore As Integer = SafeInt(nextRow("wip_score"))
+            Dim wipRejectReason As String = SafeStr(nextRow("wip_reject_reason"))
+
+            ' Do not use snapshot WIP status as a hard gate here. A scheduled
+            ' KILNACK and the live routing chain determine post-firing eligibility.
             queue.Add(New QueueItem With {
-                .ParentRecord = SafeInt(r("parent_record")),
-                .OrderNo = SafeStr(r("Order No")),
-                .KilnAckOpRec = kilnAckOpRec,
-                .KilnAckEndTime = kilnAckEnd,
-                .NextOpRec = nextOpRec,
-                .NextOpNo = nextOpNo,
-                .DueDate = ReadDueDate(preactor, ordersTable, nextOpRec),
-                .Priority = ReadPriority(preactor, ordersTable, nextOpRec)
-            })
+                    .ParentRecord = SafeInt(r("parent_record")),
+                    .OrderNo = SafeStr(r("Order No")),
+                    .KilnAckOpRec = kilnAckOpRec,
+                    .KilnAckEndTime = kilnAckEnd,
+                    .NextOpRec = nextOpRec,
+                    .NextOpNo = nextOpNo,
+                    .DueDate = ReadDueDate(preactor, ordersTable, dueDateField, nextOpRec),
+                    .Priority = ReadPriority(preactor, ordersTable, priorityField, nextOpRec),
+                    .WipScore = wipScore,
+                    .WipStatus = wipStatus,
+                    .WipRejectReason = wipRejectReason
+})
+
 
         Next
 
         ' FIFO: oven exit first. Due date breaks conflict.
         Return queue _
-            .OrderBy(Function(x) x.KilnAckEndTime) _
-            .ThenBy(Function(x) x.DueDate) _
-            .ThenBy(Function(x) x.Priority) _
-            .ThenBy(Function(x) x.ParentRecord) _
-            .ThenBy(Function(x) x.NextOpNo) _
-            .ToList()
+                .OrderByDescending(Function(x) x.WipScore) _
+                .ThenBy(Function(x) x.KilnAckEndTime) _
+                .ThenBy(Function(x) x.DueDate) _
+                .ThenBy(Function(x) x.Priority) _
+                .ThenBy(Function(x) x.ParentRecord) _
+                .ThenBy(Function(x) x.NextOpNo) _
+                .ToList()
 
     End Function
 
@@ -103,45 +133,62 @@ Public Class PostFiringScheduler
         For Each item As QueueItem In queue
 
             Try
-                ' Live validation because routingDt is only a snapshot
-                If planningboard.IsOperationScheduled(item.NextOpRec) Then Continue For
+                Dim opRec As Integer = item.NextOpRec
+                Dim testFrom As DateTime = item.KilnAckEndTime
 
-                Dim liveOpNo As Integer = preactor.ReadFieldInt(ordersTable, opNoField, item.NextOpRec)
-                If liveOpNo <> item.NextOpNo Then Continue For
-
-                Dim resources As IEnumerable(Of Integer) = planningboard.FindResources(item.NextOpRec)
-
-                Dim bestResRec As Integer = 0
-                Dim bestTimes As OperationTimes? = Nothing
-
-                For Each resRec As Integer In resources
-
-                    Dim testTimes As OperationTimes? =
-                        planningboard.TestOperationOnResource(item.NextOpRec, resRec, item.KilnAckEndTime)
-
-                    If testTimes.HasValue Then
-                        If Not bestTimes.HasValue OrElse
-                           testTimes.Value.ChangeStart < bestTimes.Value.ChangeStart Then
-
-                            bestTimes = testTimes
-                            bestResRec = resRec
-
-                        End If
+                While opRec > 0
+                    If planningboard.IsOperationScheduled(opRec) Then
+                        testFrom = GetScheduledEnd(planningboard, opRec, testFrom)
+                        opRec = planningboard.GetNextOperation(opRec, 1)
+                        Continue While
                     End If
 
-                Next
+                    Dim liveOpNo As Integer =
+                        preactor.ReadFieldInt(ordersTable, opNoField, opRec)
 
-                If bestTimes.HasValue AndAlso bestResRec > 0 Then
-                    planningboard.PutOperationOnResource(item.NextOpRec,
-                                                         bestResRec,
-                                                         bestTimes.Value.ChangeStart)
-                    scheduledCount += 1
-                Else
-                    Debug.WriteLine("PostFiring: no feasible resource. Order=" &
-                                    item.OrderNo &
-                                    ", OpRec=" & item.NextOpRec &
-                                    ", OpNo=" & item.NextOpNo)
-                End If
+                    Dim bestResRec As Integer = 0
+                    Dim bestTimes As OperationTimes? = Nothing
+                    Dim resources As IEnumerable(Of Integer) =
+                        planningboard.FindResources(opRec)
+
+                    If resources IsNot Nothing Then
+                        For Each resRec As Integer In resources
+                            Dim testTimes As OperationTimes? =
+                                planningboard.TestOperationOnResource(opRec,
+                                                                      resRec,
+                                                                      testFrom)
+
+                            If testTimes.HasValue AndAlso
+                               (Not bestTimes.HasValue OrElse
+                                testTimes.Value.ChangeStart < bestTimes.Value.ChangeStart) Then
+
+                                bestTimes = testTimes
+                                bestResRec = resRec
+                            End If
+                        Next
+                    End If
+
+                    If bestTimes.HasValue AndAlso bestResRec > 0 Then
+                        ' Recheck immediately before changing the live board.
+                        If Not planningboard.IsOperationScheduled(opRec) Then
+                            planningboard.PutOperationOnResource(opRec,
+                                                                 bestResRec,
+                                                                 bestTimes.Value.ChangeStart)
+                            scheduledCount += 1
+                        End If
+
+                        testFrom = GetScheduledEnd(planningboard,
+                                                   opRec,
+                                                   bestTimes.Value.ProcessEnd)
+                    Else
+                        Debug.WriteLine("PostFiring: no feasible resource. Order=" &
+                                        item.OrderNo &
+                                        ", OpRec=" & opRec &
+                                        ", OpNo=" & liveOpNo)
+                    End If
+
+                    opRec = planningboard.GetNextOperation(opRec, 1)
+                End While
 
             Catch ex As Exception
                 Debug.WriteLine("PostFiring failed. Order=" &
@@ -184,9 +231,11 @@ Public Class PostFiringScheduler
 
     Private Function ReadDueDate(preactor As IPreactor,
                                  ordersTable As Integer,
+                                 dueField As Integer,
                                  opRec As Integer) As DateTime
+        If dueField <= 0 Then Return DateTime.MaxValue
+
         Try
-            Dim dueField As Integer = preactor.GetFieldNumber(ordersTable, "Due Date")
             Return preactor.ReadFieldDateTime(ordersTable, dueField, opRec)
         Catch
             Return DateTime.MaxValue
@@ -195,13 +244,38 @@ Public Class PostFiringScheduler
 
     Private Function ReadPriority(preactor As IPreactor,
                                   ordersTable As Integer,
+                                  priorityField As Integer,
                                   opRec As Integer) As Integer
+        If priorityField <= 0 Then Return 999999
+
         Try
-            Dim priorityField As Integer = preactor.GetFieldNumber(ordersTable, "Priority")
             Return preactor.ReadFieldInt(ordersTable, priorityField, opRec)
         Catch
             Return 999999
         End Try
+    End Function
+
+    Private Function TryGetFieldNumber(preactor As IPreactor,
+                                       ordersTable As Integer,
+                                       fieldName As String) As Integer
+        Try
+            Return preactor.GetFieldNumber(ordersTable, fieldName)
+        Catch
+            Return 0
+        End Try
+    End Function
+
+    Private Function GetScheduledEnd(planningboard As IPlanningBoard,
+                                     opRec As Integer,
+                                     fallback As DateTime) As DateTime
+        Dim times As Nullable(Of OperationResourceTimes) =
+            planningboard.GetOperationTimes(opRec)
+
+        If times.HasValue Then
+            Return times.Value.OperationTimes.ProcessEnd
+        End If
+
+        Return fallback
     End Function
 
     Private Sub RequireColumn(dt As DataTable, colName As String)

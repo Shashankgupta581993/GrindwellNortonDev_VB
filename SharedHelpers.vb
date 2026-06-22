@@ -9,6 +9,29 @@ Imports Preactor
 
 Public Module SharedHelpers
 
+    Public Class WipInfo
+        Public Property ParentRecord As Integer
+        Public Property CurrentOpRec As Integer
+        Public Property CurrentOpNo As Integer
+
+        Public Property CurrentOpScheduled As Boolean
+        Public Property CurrentOpStarted As Boolean
+
+        Public Property PrevOpRec As Integer
+        Public Property PrevOpNo As Integer
+        Public Property PrevOpScheduled As Boolean
+        Public Property PrevOpEndTime As DateTime
+
+        Public Property HasAnyPriorScheduled As Boolean
+        Public Property LastPriorScheduledOpNo As Integer
+        Public Property HasFutureScheduledOp As Boolean
+
+        Public Property ReadyTime As DateTime
+        Public Property WipScore As Integer
+
+        Public Property CandidateStatus As String
+        Public Property RejectReason As String
+    End Class
     Public Sub RequireColumn(dt As DataTable, name As String)
         If Not dt.Columns.Contains(name) Then Throw New ArgumentException($"Missing required column: '{name}'")
     End Sub
@@ -172,14 +195,36 @@ Public Module SharedHelpers
     ' Creating the datastructure for routing information
     Public Function BuildRoutingSchema() As DataTable
         Dim dt As New DataTable("RoutingFromOpcenter")
+        'Dim cols As String() = {
+        '    "OrdersID", "Order No", "Part Number", "Part Name", "Operation Number", "Operation Name",
+        '    "Resource Group", "Required Resource", "Setup Time", "Time Per Item", "Sales Order", "Quantity",
+        '    "Due Date", "Batch Time", "Process Time Type", "Tonnage", "Cycle Type", "Volume Occupancy",
+        '    "Kiln Type", "Firing buffer", "MTS/MTO", "MTS/MTO priority", "Que Time", "Pressing buffer",
+        '    "Wheel Dia", "Wheel thickness", "Week start", "Pressing earliest start", "Pressing Due date",
+        '    "Constaint Usage", "Constraint Qty", "firing earliest start date", "firing due date", "scheduled_start_time", "scheduled_end_time", "is_scheduled", "parent_record", "prev_op_is_scheduled"
+        '}
         Dim cols As String() = {
-            "OrdersID", "Order No", "Part Number", "Part Name", "Operation Number", "Operation Name",
-            "Resource Group", "Required Resource", "Setup Time", "Time Per Item", "Sales Order", "Quantity",
-            "Due Date", "Batch Time", "Process Time Type", "Tonnage", "Cycle Type", "Volume Occupancy",
-            "Kiln Type", "Firing buffer", "MTS/MTO", "MTS/MTO priority", "Que Time", "Pressing buffer",
-            "Wheel Dia", "Wheel thickness", "Week start", "Pressing earliest start", "Pressing Due date",
-            "Constaint Usage", "Constraint Qty", "firing earliest start date", "firing due date", "scheduled_start_time", "scheduled_end_time", "is_scheduled", "parent_record", "prev_op_is_scheduled"
-        }
+    "OrdersID", "Order No", "Part Number", "Part Name", "Operation Number", "Operation Name",
+    "Resource Group", "Required Resource", "Setup Time", "Time Per Item", "Sales Order", "Quantity",
+    "Due Date", "Batch Time", "Process Time Type", "Tonnage", "Cycle Type", "Volume Occupancy",
+    "Kiln Type", "Firing buffer", "MTS/MTO", "MTS/MTO priority", "Que Time", "Pressing buffer",
+    "Wheel Dia", "Wheel thickness", "Week start", "Pressing earliest start", "Pressing Due date",
+    "Constaint Usage", "Constraint Qty", "firing earliest start date", "firing due date",
+    "scheduled_start_time", "scheduled_end_time", "is_scheduled", "parent_record", "prev_op_is_scheduled",
+    "wip_current_op_scheduled",
+    "wip_current_op_started",
+    "wip_prev_op_rec",
+    "wip_prev_op_no",
+    "wip_prev_op_scheduled",
+    "wip_prev_op_end_time",
+    "wip_any_prior_scheduled",
+    "wip_last_prior_scheduled_op_no",
+    "wip_has_future_scheduled_op",
+    "wip_ready_time",
+    "wip_score",
+    "wip_status",
+    "wip_reject_reason"
+}
         For Each c In cols
             dt.Columns.Add(New DataColumn(c, GetType(Object)))
         Next
@@ -224,15 +269,20 @@ Public Module SharedHelpers
         Dim schEnd = preactor.GetFieldNumber(ordersTable, "End Time")
         'Dim parentRecord = preactor.GetFieldNumber(ordersTable, "Belongs to Order No.")
         Dim rowCount = preactor.RecordCount(ordersTable)
+        Dim parentRecordByOrderNo As New Dictionary(Of String, Integer)(
+            StringComparer.OrdinalIgnoreCase)
+
         For rec As Integer = 1 To rowCount
             Dim r As DataRow = dt.NewRow()
 
             ' 2. Cache values used multiple times to avoid redundant API reads
             Dim currentOpNo As Integer = preactor.ReadFieldInt(ordersTable, opNo, rec)
             Dim isScheduled As Boolean = planningboard.IsOperationScheduled(rec)
+            Dim currentOrderNo As String =
+                preactor.ReadFieldString(ordersTable, orderNo, rec).Trim()
 
             r("OrdersID") = rec
-            r("Order No") = preactor.ReadFieldString(ordersTable, orderNo, rec)
+            r("Order No") = currentOrderNo
             'r("Part Number") = preactor.ReadFieldString(ordersTable, partNo, rec)
             'r("Part Name") = preactor.ReadFieldString(ordersTable, product, rec)
             r("Operation Number") = preactor.ReadFieldInt(ordersTable, opNo, rec)
@@ -272,34 +322,324 @@ Public Module SharedHelpers
                 r("scheduled_end_time") = preactor.ReadFieldDateTime(ordersTable, schEnd, rec)
             End If
 
-            ' 4. Consolidated rec > 1 logic & short-circuit evaluation
-            If rec > 1 Then
-                r("parent_record") = preactor.FindMatchingRecord(ordersTable, 1, rec, -1, SearchDirection.Backwards)
+            ' 4. Cache the first operation record for each order. This replaces
+            ' one FindMatchingRecord COM call per operation.
+            Dim parentRecord As Integer
 
-                Dim prevOpRec As Integer = 0
-
-                Try
-                    prevOpRec = planningboard.GetPreviousOperation(rec, 1)
-
-                    If prevOpRec > 0 Then
-                        r("prev_op_is_scheduled") = planningboard.IsOperationScheduled(prevOpRec)
-                    End If
-
-                Catch ex As Exception
-                    ' Keep default False if previous-operation lookup fails.
-                    ' Optional: add logging later.
-                    r("prev_op_is_scheduled") = False
-                End Try
-            Else
-                r("parent_record") = 1
+            If currentOrderNo.Length = 0 Then
+                parentRecord = rec
+            ElseIf Not parentRecordByOrderNo.TryGetValue(currentOrderNo, parentRecord) Then
+                parentRecord = rec
+                parentRecordByOrderNo.Add(currentOrderNo, parentRecord)
             End If
+
+            r("parent_record") = parentRecord
+
+            Dim prevOpRec As Integer = 0
+
+            Try
+                prevOpRec = planningboard.GetPreviousOperation(rec, 1)
+
+                If prevOpRec > 0 Then
+                    r("prev_op_is_scheduled") = planningboard.IsOperationScheduled(prevOpRec)
+                End If
+
+            Catch ex As Exception
+                ' Keep default False if previous-operation lookup fails.
+                ' Optional: add logging later.
+                r("prev_op_is_scheduled") = False
+            End Try
 
             dt.Rows.Add(r)
         Next
         dt.EndLoadData()
+        PopulateWipColumns(dt, planningboard, planningboard.TerminatorTime)
         Return dt
     End Function
+    Public Function GetWipInfo(dt As DataTable,
+                           planningboard As IPlanningBoard,
+                           targetRow As DataRow,
+                           terminatorTime As DateTime,
+                           readyBufferMinutes As Integer,
+                           requirePrevScheduled As Boolean) As WipInfo
 
+        If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
+        If targetRow Is Nothing Then Throw New ArgumentNullException(NameOf(targetRow))
+
+        Dim parentRecord As Integer = GetEffectiveParentRecord(targetRow)
+        Dim orderRows As List(Of DataRow) =
+        dt.AsEnumerable().
+            Where(Function(x) GetEffectiveParentRecord(x) = parentRecord).
+            OrderBy(Function(x) SafeInt(x("Operation Number"))).
+            ThenBy(Function(x) SafeInt(x("OrdersID"))).
+            ToList()
+
+        Dim currentOpNo As Integer = SafeInt(targetRow("Operation Number"))
+        Dim prevRow As DataRow = Nothing
+        Dim hasAnyPriorScheduled As Boolean = False
+        Dim lastPriorScheduledOpNo As Integer = 0
+        Dim hasFutureScheduledOp As Boolean = False
+
+        For Each row As DataRow In orderRows
+            Dim opNo As Integer = SafeInt(row("Operation Number"))
+
+            If opNo < currentOpNo Then
+                prevRow = row
+
+                If SafeBool(row("is_scheduled")) AndAlso
+                   SafeDate(row("scheduled_end_time")) <> DateTime.MinValue Then
+
+                    hasAnyPriorScheduled = True
+                    lastPriorScheduledOpNo = opNo
+                End If
+            ElseIf opNo > currentOpNo AndAlso SafeBool(row("is_scheduled")) Then
+                hasFutureScheduledOp = True
+            End If
+        Next
+
+        Return CreateWipInfo(targetRow,
+                             prevRow,
+                             hasAnyPriorScheduled,
+                             lastPriorScheduledOpNo,
+                             hasFutureScheduledOp,
+                             terminatorTime,
+                             readyBufferMinutes,
+                             requirePrevScheduled)
+
+    End Function
+
+    Private Function GetEffectiveParentRecord(row As DataRow) As Integer
+
+        Dim parentRecord As Integer = SafeInt(row("parent_record"))
+        If parentRecord > 0 Then Return parentRecord
+
+        Return SafeInt(row("OrdersID"))
+
+    End Function
+
+    Private Function CreateWipInfo(targetRow As DataRow,
+                                   prevRow As DataRow,
+                                   hasAnyPriorScheduled As Boolean,
+                                   lastPriorScheduledOpNo As Integer,
+                                   hasFutureScheduledOp As Boolean,
+                                   terminatorTime As DateTime,
+                                   readyBufferMinutes As Integer,
+                                   requirePrevScheduled As Boolean) As WipInfo
+
+        Dim result As New WipInfo With {
+            .CurrentOpRec = SafeInt(targetRow("OrdersID")),
+            .CurrentOpNo = SafeInt(targetRow("Operation Number")),
+            .ParentRecord = GetEffectiveParentRecord(targetRow),
+            .CurrentOpScheduled = SafeBool(targetRow("is_scheduled")),
+            .CurrentOpStarted = False,
+            .HasAnyPriorScheduled = hasAnyPriorScheduled,
+            .LastPriorScheduledOpNo = lastPriorScheduledOpNo,
+            .HasFutureScheduledOp = hasFutureScheduledOp
+        }
+
+        Dim startT As DateTime = SafeDate(targetRow("scheduled_start_time"))
+        If startT <> DateTime.MinValue AndAlso startT <= terminatorTime Then
+            result.CurrentOpStarted = True
+        End If
+
+        If prevRow IsNot Nothing Then
+            result.PrevOpRec = SafeInt(prevRow("OrdersID"))
+            result.PrevOpNo = SafeInt(prevRow("Operation Number"))
+            result.PrevOpScheduled = SafeBool(prevRow("is_scheduled"))
+
+            If result.PrevOpScheduled Then
+                result.PrevOpEndTime = SafeDate(prevRow("scheduled_end_time"))
+            End If
+        End If
+
+        If result.PrevOpScheduled AndAlso result.PrevOpEndTime <> DateTime.MinValue Then
+            result.ReadyTime = result.PrevOpEndTime.AddMinutes(readyBufferMinutes)
+        Else
+            result.ReadyTime = DateTime.MinValue
+        End If
+
+        If result.LastPriorScheduledOpNo > 0 Then
+            result.WipScore = 1000 + result.LastPriorScheduledOpNo
+        Else
+            result.WipScore = 0
+        End If
+
+        result.CandidateStatus = "Candidate"
+        result.RejectReason = ""
+
+        If result.CurrentOpScheduled Then
+            result.CandidateStatus = "Rejected"
+            result.RejectReason = "Current operation already scheduled"
+        ElseIf result.CurrentOpStarted Then
+            result.CandidateStatus = "Rejected"
+            result.RejectReason = "Current operation already started or historical"
+        ElseIf result.HasFutureScheduledOp Then
+            result.CandidateStatus = "Rejected"
+            result.RejectReason = "Future operation already scheduled"
+        ElseIf requirePrevScheduled AndAlso result.PrevOpRec <= 0 Then
+            result.CandidateStatus = "Rejected"
+            result.RejectReason = "No previous operation found"
+        ElseIf requirePrevScheduled AndAlso Not result.PrevOpScheduled Then
+            result.CandidateStatus = "Rejected"
+            result.RejectReason = "Previous operation not scheduled"
+        ElseIf requirePrevScheduled AndAlso result.PrevOpEndTime = DateTime.MinValue Then
+            result.CandidateStatus = "Rejected"
+            result.RejectReason = "Previous operation has no valid end time"
+        End If
+
+        Return result
+
+    End Function
+
+    Public Function CanScheduleCandidate(wip As WipInfo) As Boolean
+        Return wip IsNot Nothing AndAlso
+           wip.CandidateStatus.Equals("Candidate", StringComparison.OrdinalIgnoreCase)
+    End Function
+
+    Private Sub WriteWipColumns(row As DataRow, wip As WipInfo)
+
+        row("wip_current_op_scheduled") = wip.CurrentOpScheduled
+        row("wip_current_op_started") = wip.CurrentOpStarted
+        row("wip_prev_op_rec") = wip.PrevOpRec
+        row("wip_prev_op_no") = wip.PrevOpNo
+        row("wip_prev_op_scheduled") = wip.PrevOpScheduled
+        row("wip_prev_op_end_time") =
+            If(wip.PrevOpEndTime = DateTime.MinValue,
+               CType(DBNull.Value, Object),
+               CType(wip.PrevOpEndTime, Object))
+        row("wip_any_prior_scheduled") = wip.HasAnyPriorScheduled
+        row("wip_last_prior_scheduled_op_no") = wip.LastPriorScheduledOpNo
+        row("wip_has_future_scheduled_op") = wip.HasFutureScheduledOp
+        row("wip_ready_time") =
+            If(wip.ReadyTime = DateTime.MinValue,
+               CType(DBNull.Value, Object),
+               CType(wip.ReadyTime, Object))
+        row("wip_score") = wip.WipScore
+        row("wip_status") = wip.CandidateStatus
+        row("wip_reject_reason") = wip.RejectReason
+
+    End Sub
+
+    Public Sub PopulateWipColumns(dt As DataTable, planningboard As IPlanningBoard, terminatorTime As DateTime)
+
+        If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
+        If planningboard Is Nothing Then Throw New ArgumentNullException(NameOf(planningboard))
+
+        ' Build and sort each order's routing once. Calling GetWipInfo for every
+        ' row would otherwise scan and sort the entire DataTable repeatedly.
+        Dim rowsByParent As New Dictionary(Of Integer, List(Of DataRow))()
+
+        For Each r As DataRow In dt.Rows
+            Dim parentRecord As Integer = GetEffectiveParentRecord(r)
+            Dim orderRows As List(Of DataRow) = Nothing
+
+            If Not rowsByParent.TryGetValue(parentRecord, orderRows) Then
+                orderRows = New List(Of DataRow)()
+                rowsByParent.Add(parentRecord, orderRows)
+            End If
+
+            orderRows.Add(r)
+        Next
+
+        For Each orderRows As List(Of DataRow) In rowsByParent.Values
+            orderRows.Sort(
+                Function(leftRow As DataRow, rightRow As DataRow) As Integer
+                    Dim compareOpNo As Integer =
+                        SafeInt(leftRow("Operation Number")).CompareTo(
+                            SafeInt(rightRow("Operation Number")))
+
+                    If compareOpNo <> 0 Then Return compareOpNo
+
+                    Return SafeInt(leftRow("OrdersID")).CompareTo(
+                        SafeInt(rightRow("OrdersID")))
+                End Function)
+        Next
+
+        For Each orderRows As List(Of DataRow) In rowsByParent.Values
+            PopulateOrderWipColumns(orderRows, terminatorTime)
+        Next
+
+    End Sub
+
+    Private Sub PopulateOrderWipColumns(orderRows As List(Of DataRow),
+                                        terminatorTime As DateTime)
+
+        If orderRows.Count = 0 Then Return
+
+        ' A future operation is one with a strictly greater operation number.
+        ' Compute that state once per operation-number group.
+        Dim hasFutureScheduled(orderRows.Count - 1) As Boolean
+        Dim futureScheduled As Boolean = False
+        Dim groupEnd As Integer = orderRows.Count - 1
+
+        While groupEnd >= 0
+            Dim opNo As Integer = SafeInt(orderRows(groupEnd)("Operation Number"))
+            Dim groupStart As Integer = groupEnd
+
+            While groupStart > 0 AndAlso
+                  SafeInt(orderRows(groupStart - 1)("Operation Number")) = opNo
+                groupStart -= 1
+            End While
+
+            For i As Integer = groupStart To groupEnd
+                hasFutureScheduled(i) = futureScheduled
+            Next
+
+            For i As Integer = groupStart To groupEnd
+                If SafeBool(orderRows(i)("is_scheduled")) Then
+                    futureScheduled = True
+                    Exit For
+                End If
+            Next
+
+            groupEnd = groupStart - 1
+        End While
+
+        Dim prevRow As DataRow = Nothing
+        Dim hasAnyPriorScheduled As Boolean = False
+        Dim lastPriorScheduledOpNo As Integer = 0
+        Dim groupStartForward As Integer = 0
+
+        While groupStartForward < orderRows.Count
+            Dim opNo As Integer =
+                SafeInt(orderRows(groupStartForward)("Operation Number"))
+            Dim groupEndForward As Integer = groupStartForward
+
+            While groupEndForward + 1 < orderRows.Count AndAlso
+                  SafeInt(orderRows(groupEndForward + 1)("Operation Number")) = opNo
+                groupEndForward += 1
+            End While
+
+            For i As Integer = groupStartForward To groupEndForward
+                Dim wip As WipInfo =
+                    CreateWipInfo(orderRows(i),
+                                  prevRow,
+                                  hasAnyPriorScheduled,
+                                  lastPriorScheduledOpNo,
+                                  hasFutureScheduled(i),
+                                  terminatorTime,
+                                  0,
+                                  False)
+
+                WriteWipColumns(orderRows(i), wip)
+            Next
+
+            For i As Integer = groupStartForward To groupEndForward
+                If SafeBool(orderRows(i)("is_scheduled")) AndAlso
+                   SafeDate(orderRows(i)("scheduled_end_time")) <> DateTime.MinValue Then
+
+                    hasAnyPriorScheduled = True
+                    lastPriorScheduledOpNo = opNo
+                End If
+            Next
+
+            ' Rows are sorted by operation number and record ID, so the final
+            ' row in this group matches the old previous-operation tie-break.
+            prevRow = orderRows(groupEndForward)
+            groupStartForward = groupEndForward + 1
+        End While
+
+    End Sub
     ' Returns the end time of the last scheduled operation on a given resource.
     ' If nothing is scheduled on that resource, returns Nothing (you can swap to ScheduleHorizon.Start, Now, etc.)
 
