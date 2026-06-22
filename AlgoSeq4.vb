@@ -1285,49 +1285,48 @@ Public Class AlgoSeq4
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
-        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
-        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
+        Dim ordersTable As Integer =
+        preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+
+        Dim opNoField As Integer =
+        preactor.GetFieldNumber(ordersTable, "Op. No.")
+
+        Dim airDryResourceRec As Integer =
+        planningboard.GetResourceNumber("AIRDRY")
 
         Dim currentDate As DateTime = planningboard.TerminatorTime
         Dim routingDt As DataTable = readOrderTable(preactor)
 
-        ' Build only unscheduled downstream candidates, ranked WIP-first.
-        Dim queue As List(Of Integer) =
-        BuildPressToFiringQueue(preactor, planningboard, routingDt, currentDate, ordersTable, opNoField)
 
-        CreateRankedOperationQueue(preactor, planningboard, ordersTable, "JobsQueue", queue)
+        ' Build first eligible WIP operations.
+        Dim queue As List(Of Integer) =
+        BuildPressToFiringQueue(preactor,
+                                planningboard,
+                                routingDt,
+                                currentDate,
+                                ordersTable,
+                                opNoField)
+
+        Dim queueName As String =
+        "JobsQueue_PressToFiring_" & DateTime.Now.ToString("yyyyMMddHHmmssfff",
+                                                           CultureInfo.InvariantCulture)
+
+        CreateRankedOperationQueue(preactor, planningboard, ordersTable, queueName, queue)
 
         Dim opRec As Integer = 0
 
-        While planningboard.GetOperationInQueue("JobsQueue", 1, opRec)
+        While planningboard.GetOperationInQueue(queueName, 1, opRec)
 
-            planningboard.RemoveOperationFromQueue("JobsQueue", opRec)
+            planningboard.RemoveOperationFromQueue(queueName, opRec)
 
-            ' Hard guard: never touch an already scheduled operation.
-            If IsScheduledLive(planningboard, opRec) Then Continue While
-
-            Dim opNo As Integer = preactor.ReadFieldInt(ordersTable, opNoField, opRec)
-
-            If opNo <= 200 OrElse opNo >= 290 Then Continue While
-
-            ' Downstream WIP rule: previous operation must already be scheduled.
-            Dim readyTime As DateTime?
-            readyTime = GetReadyTimeFromScheduledPredecessors(planningboard, opRec)
-
-            If Not readyTime.HasValue Then Continue While
-
-            Dim placement As Placement? =
-            FindEarliestFeasiblePlacement(preactor, planningboard, ordersTable, opRec, readyTime.Value)
-
-            If placement.HasValue Then
-
-                ' Second hard guard, because the board may have changed during this rule.
-                If IsScheduledLive(planningboard, opRec) Then Continue While
-
-                planningboard.PutOperationOnResource(opRec,
-                                                 placement.Value.ResourceRec,
-                                                 placement.Value.StartTime.Date.AddDays(1))
-            End If
+            ' Schedule this operation and all following unscheduled operations
+            ' until firing/loading starts.
+            SchedulePressToFiringChain(preactor,
+                                   planningboard,
+                                   ordersTable,
+                                   opNoField,
+                                   airDryResourceRec,
+                                   opRec)
 
         End While
 
@@ -1335,6 +1334,74 @@ Public Class AlgoSeq4
         Return 0
 
     End Function
+    Private Sub SchedulePressToFiringChain(preactor As IPreactor,
+                                       planningboard As IPlanningBoard,
+                                       ordersTable As Integer,
+                                       opNoField As Integer,
+                                       airDryResourceRec As Integer,
+                                       startOpRec As Integer)
+
+        Dim opRec As Integer = startOpRec
+
+        While opRec > 0
+
+            Dim opNo As Integer =
+            preactor.ReadFieldInt(ordersTable, opNoField, opRec)
+
+            ' Stop when firing/loading starts.
+            If opNo >= 290 Then Exit While
+
+            ' Skip pressing and earlier operations.
+            If opNo > 200 AndAlso opNo < 290 Then
+
+                ' Never reschedule an already scheduled operation.
+                If Not IsScheduledLive(planningboard, opRec) Then
+
+                    Dim readyTime As DateTime? =
+                    GetReadyTimeFromScheduledPredecessors(planningboard, opRec)
+
+                    If Not readyTime.HasValue Then
+                        Exit While
+                    End If
+
+                    Dim placement As Placement? =
+                    FindEarliestFeasiblePlacement(preactor,
+                                                  planningboard,
+                                                  ordersTable,
+                                                  opRec,
+                                                  readyTime.Value)
+
+                    If placement.HasValue Then
+
+                        If Not IsScheduledLive(planningboard, opRec) Then
+                            Dim operationStart As DateTime = placement.Value.StartTime
+
+                            ' Air drying starts on the next day. Drying and all
+                            ' other operations retain their normal earliest start.
+                            If placement.Value.ResourceRec = airDryResourceRec Then
+                                operationStart = operationStart.Date.AddDays(1)
+                            End If
+
+                            planningboard.PutOperationOnResource(opRec,
+                                                             placement.Value.ResourceRec,
+                                                             operationStart)
+                        End If
+
+                    Else
+                        Exit While
+                    End If
+
+                End If
+
+            End If
+
+            ' Continue through the routing so DRYING follows AIRDRY and the
+            ' remaining operations are scheduled in sequence.
+            opRec = planningboard.GetNextOperation(opRec, 1)
+
+        End While
+
+    End Sub
 
     Private Class PressToFiringCandidate
         Public Property OpRec As Integer
