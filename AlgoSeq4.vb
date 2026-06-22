@@ -1205,148 +1205,320 @@ Public Class AlgoSeq4
         Return 0
     End Function
 
-    Public Function runPressToFiring(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
-        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
-        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
-
-        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
-        Dim opNofield As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
-
-        Dim currentDate As DateTime = planningboard.TerminatorTime
-        Dim routingdt As DataTable = readOrderTable(preactor)
-
-        Dim pressingQueue As List(Of Integer) = BuildPressing200Queue(routingdt, currentDate)
-        CreateRankedOperationQueue(preactor, planningboard, ordersTable, "JobsQueue", pressingQueue)
-
-        Dim reccount As Integer = preactor.RecordCount(ordersTable)
-        Dim AIRDRY As Integer = planningboard.GetResourceNumber("AIRDRY")
-        Dim DRYER As Integer = planningboard.GetResourceNumber("DRYER") ' Kept for reference, though logically merged below
-
-        Dim terminatorBoundary As DateTime = planningboard.TerminatorTime
-
-        ' OPTIMIZATION: Pre-declare all variables outside the loop to prevent repeated stack allocations
-        Dim opNo As Integer
-        Dim resRecs As IEnumerable(Of Integer)
-        Dim bestResRec As Integer
-        Dim opTimes As OperationTimes?
-        Dim bestOpTimes As OperationTimes?
-        Dim finalChangeStart As DateTime
-
-        ' OPTIMIZATION: Use a 'For' loop instead of 'While' for slightly faster and cleaner index iteration
-        For opRec As Integer = 1 To reccount
-            ' Read the field once per record
-            opNo = preactor.ReadFieldInt(ordersTable, opNofield, opRec)
-
-            ' Short-circuit evaluation: Only proceed if opNo is exactly within the range
-            If opNo > 200 AndAlso opNo < 290 Then
-                resRecs = planningboard.FindResources(opRec)
-
-                ' SAFETY: Ensure FindResources didn't return a null collection before iterating
-                If resRecs IsNot Nothing Then
-                    bestResRec = 0
-                    bestOpTimes = Nothing
-
-                    For Each resRec As Integer In resRecs
-                        opTimes = planningboard.TestOperationOnResource(opRec, resRec, terminatorBoundary)
-
-                        ' SAFE CHECK: Only compare if TestOperationOnResource returned a valid object
-                        If opTimes.HasValue Then
-                            ' Compare to find the earliest start time
-                            If Not bestOpTimes.HasValue OrElse opTimes.Value.ChangeStart < bestOpTimes.Value.ChangeStart Then
-                                bestResRec = resRec
-                                bestOpTimes = opTimes
-                            End If
-                        End If
-                    Next
-
-                    ' FINAL ASSIGNMENT: Ensure we found a valid time and resource
-                    If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
-                        finalChangeStart = bestOpTimes.Value.ChangeStart
-
-                        ' OPTIMIZATION: Cleaned up redundant ElseIf block
-                        If bestResRec = AIRDRY Then
-                            planningboard.PutOperationOnResource(opRec, bestResRec, finalChangeStart.Date.AddDays(1))
-                        Else
-                            ' Handles DRYER and any other resource exactly the same way (as in your original logic)
-                            planningboard.PutOperationOnResource(opRec, bestResRec, finalChangeStart)
-                        End If
-                    End If
-                End If
-            End If
-        Next
-
-        preactor.DestroyStatus()
-        Return 0
-    End Function
-
     'Public Function runPressToFiring(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
-
     '    Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
     '    Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
     '    Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
     '    Dim opNofield As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
 
-    '    ' Note: Removed batchTimeField and batchDueField variables as their downstream logic was redundant. 
-
     '    Dim currentDate As DateTime = planningboard.TerminatorTime
     '    Dim routingdt As DataTable = readOrderTable(preactor)
+
     '    Dim pressingQueue As List(Of Integer) = BuildPressing200Queue(routingdt, currentDate)
     '    CreateRankedOperationQueue(preactor, planningboard, ordersTable, "JobsQueue", pressingQueue)
 
-    '    ' Snapshot for debugging
-    '    ' Dim jobsQueueSnapshot As List(Of Integer) = GetQueueSnapshot(planningboard, "JobsQueue")
-
     '    Dim reccount As Integer = preactor.RecordCount(ordersTable)
     '    Dim AIRDRY As Integer = planningboard.GetResourceNumber("AIRDRY")
-    '    Dim DRYER As Integer = planningboard.GetResourceNumber("DRYER")
+    '    Dim DRYER As Integer = planningboard.GetResourceNumber("DRYER") ' Kept for reference, though logically merged below
 
-    '    ' Cache TerminatorTime outside the loop to save expensive COM calls
     '    Dim terminatorBoundary As DateTime = planningboard.TerminatorTime
 
-    '    Dim opRec As Integer = 1
+    '    ' OPTIMIZATION: Pre-declare all variables outside the loop to prevent repeated stack allocations
+    '    Dim opNo As Integer
+    '    Dim resRecs As IEnumerable(Of Integer)
+    '    Dim bestResRec As Integer
+    '    Dim opTimes As OperationTimes?
+    '    Dim bestOpTimes As OperationTimes?
+    '    Dim finalChangeStart As DateTime
 
-    '    ' Loop through all operations
-    '    While opRec <= reccount
-    '        ' 1. Cache the field read. Reading fields in Preactor is expensive; do it once per record.
-    '        Dim opNo As Integer = preactor.ReadFieldInt(ordersTable, opNofield, opRec)
+    '    ' OPTIMIZATION: Use a 'For' loop instead of 'While' for slightly faster and cleaner index iteration
+    '    For opRec As Integer = 1 To reccount
+    '        ' Read the field once per record
+    '        opNo = preactor.ReadFieldInt(ordersTable, opNofield, opRec)
 
-    '        ' 2. Use AndAlso for short-circuit evaluation
+    '        ' Short-circuit evaluation: Only proceed if opNo is exactly within the range
     '        If opNo > 200 AndAlso opNo < 290 Then
-    '            Dim ResRecs As IEnumerable(Of Integer) = planningboard.FindResources(opRec)
-    '            Dim bestResRec As Integer = 0
-    '            Dim bestOpTimes As Nullable(Of Preactor.OperationTimes) = Nothing
+    '            resRecs = planningboard.FindResources(opRec)
 
-    '            For Each ResRec In ResRecs
-    '                Dim opTimes As Nullable(Of Preactor.OperationTimes) = planningboard.TestOperationOnResource(opRec, ResRec, terminatorBoundary)
+    '            ' SAFETY: Ensure FindResources didn't return a null collection before iterating
+    '            If resRecs IsNot Nothing Then
+    '                bestResRec = 0
+    '                bestOpTimes = Nothing
 
-    '                If opTimes.HasValue Then
-    '                    ' 3. Combined condition to check if it's the first value OR a better value
-    '                    If Not bestOpTimes.HasValue OrElse opTimes.Value.ChangeStart < bestOpTimes.Value.ChangeStart Then
-    '                        bestResRec = ResRec
-    '                        bestOpTimes = opTimes
+    '                For Each resRec As Integer In resRecs
+    '                    opTimes = planningboard.TestOperationOnResource(opRec, resRec, terminatorBoundary)
+
+    '                    ' SAFE CHECK: Only compare if TestOperationOnResource returned a valid object
+    '                    If opTimes.HasValue Then 
+    '                        ' Compare to find the earliest start time
+    '                        If Not bestOpTimes.HasValue OrElse opTimes.Value.ChangeStart < bestOpTimes.Value.ChangeStart Then
+    '                            bestResRec = resRec
+    '                            bestOpTimes = opTimes
+    '                        End If
     '                    End If
-    '                End If
-    '            Next
+    '                Next
 
-    '            If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
-    '                If bestResRec = AIRDRY Then
-    '                    planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart.Date.AddDays(1))
-    '                ElseIf bestResRec = DRYER Then
-    '                    ' 4. Cleaned up redundant If/Else block
-    '                    planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
-    '                Else
-    '                    planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
+    '                ' FINAL ASSIGNMENT: Ensure we found a valid time and resource
+    '                If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
+    '                    finalChangeStart = bestOpTimes.Value.ChangeStart
+
+    '                    ' OPTIMIZATION: Cleaned up redundant ElseIf block
+    '                    If bestResRec = AIRDRY Then
+    '                        planningboard.PutOperationOnResource(opRec, bestResRec, finalChangeStart.Date.AddDays(1))
+    '                    Else
+    '                        ' Handles DRYER and any other resource exactly the same way (as in your original logic)
+    '                        planningboard.PutOperationOnResource(opRec, bestResRec, finalChangeStart)
+    '                    End If
     '                End If
     '            End If
     '        End If
-
-    '        opRec += 1
-    '    End While
+    '    Next
 
     '    preactor.DestroyStatus()
     '    Return 0
     'End Function
+
+    Public Function runPressToFiring(ByRef preactorComObject As PreactorObj,
+                                 ByRef pespComObject As Object) As Integer
+
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+
+        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
+
+        Dim currentDate As DateTime = planningboard.TerminatorTime
+        Dim routingDt As DataTable = readOrderTable(preactor)
+
+        ' Build only unscheduled downstream candidates, ranked WIP-first.
+        Dim queue As List(Of Integer) =
+        BuildPressToFiringQueue(preactor, planningboard, routingDt, currentDate, ordersTable, opNoField)
+
+        CreateRankedOperationQueue(preactor, planningboard, ordersTable, "JobsQueue", queue)
+
+        Dim opRec As Integer = 0
+
+        While planningboard.GetOperationInQueue("JobsQueue", 1, opRec)
+
+            planningboard.RemoveOperationFromQueue("JobsQueue", opRec)
+
+            ' Hard guard: never touch an already scheduled operation.
+            If IsScheduledLive(planningboard, opRec) Then Continue While
+
+            Dim opNo As Integer = preactor.ReadFieldInt(ordersTable, opNoField, opRec)
+
+            If opNo <= 200 OrElse opNo >= 290 Then Continue While
+
+            ' Downstream WIP rule: previous operation must already be scheduled.
+            Dim readyTime As DateTime?
+            readyTime = GetReadyTimeFromScheduledPredecessors(planningboard, opRec)
+
+            If Not readyTime.HasValue Then Continue While
+
+            Dim placement As Placement? =
+            FindEarliestFeasiblePlacement(preactor, planningboard, ordersTable, opRec, readyTime.Value)
+
+            If placement.HasValue Then
+
+                ' Second hard guard, because the board may have changed during this rule.
+                If IsScheduledLive(planningboard, opRec) Then Continue While
+
+                planningboard.PutOperationOnResource(opRec,
+                                                 placement.Value.ResourceRec,
+                                                 placement.Value.StartTime.Date.AddDays(1))
+            End If
+
+        End While
+
+        preactor.DestroyStatus()
+        Return 0
+
+    End Function
+
+    Private Class PressToFiringCandidate
+        Public Property OpRec As Integer
+        Public Property OrderNo As String
+        Public Property OpNo As Integer
+        Public Property IsWip As Boolean
+        Public Property ReadyTime As DateTime
+        Public Property DueTime As DateTime
+        Public Property CycleRank As Integer
+    End Class
+
+    Private Structure Placement
+        Public ResourceRec As Integer
+        Public StartTime As DateTime
+    End Structure
+
+    Private Function IsScheduledLive(planningboard As IPlanningBoard,
+                                 opRec As Integer) As Boolean
+
+        If opRec <= 0 Then Return False
+
+        Dim times As Nullable(Of Preactor.OperationResourceTimes) =
+        planningboard.GetOperationTimes(opRec)
+
+        Return times.HasValue
+
+    End Function
+
+    Private Function GetReadyTimeFromScheduledPredecessors(planningboard As IPlanningBoard,
+                                                       opRec As Integer) As DateTime?
+
+        Dim idx As Integer = 1
+        Dim prevRec As Integer
+        Dim foundAny As Boolean = False
+        Dim maxEnd As DateTime = DateTime.MinValue
+
+        Do
+            prevRec = planningboard.GetPreviousOperation(opRec, idx)
+
+            If prevRec <= 0 Then Exit Do
+
+            Dim prevTimes As Nullable(Of Preactor.OperationResourceTimes) =
+            planningboard.GetOperationTimes(prevRec)
+
+            ' If predecessor exists but is not scheduled, this operation is not WIP-ready.
+            If Not prevTimes.HasValue Then Return Nothing
+
+            foundAny = True
+
+            If prevTimes.Value.OperationTimes.ProcessEnd > maxEnd Then
+                maxEnd = prevTimes.Value.OperationTimes.ProcessEnd
+            End If
+
+            idx += 1
+        Loop
+
+        If Not foundAny Then Return Nothing
+
+        Return maxEnd
+
+    End Function
+
+    Private Function FindEarliestFeasiblePlacement(preactor As IPreactor,
+                                               planningboard As IPlanningBoard,
+                                               ordersTable As Integer,
+                                               opRec As Integer,
+                                               readyTime As DateTime) As Placement?
+
+        Dim testFrom As DateTime = readyTime
+
+        If testFrom < planningboard.TerminatorTime Then
+            testFrom = planningboard.TerminatorTime
+        End If
+
+        Dim bestPlacement As Placement? = Nothing
+        Dim bestTimes As Nullable(Of Preactor.OperationTimes) = Nothing
+
+        For Each resRec As Integer In planningboard.FindResources(opRec)
+
+            Dim testTimes As Nullable(Of Preactor.OperationTimes) =
+            planningboard.TestOperationOnResource(opRec, resRec, testFrom)
+
+            If Not testTimes.HasValue Then Continue For
+
+            If Not bestTimes.HasValue OrElse
+           testTimes.Value.ChangeStart < bestTimes.Value.ChangeStart Then
+
+                bestTimes = testTimes
+
+                bestPlacement = New Placement With {
+                .ResourceRec = resRec,
+                .StartTime = testTimes.Value.ChangeStart
+            }
+
+            End If
+
+        Next
+
+        Return bestPlacement
+
+    End Function
+
+    Private Function BuildPressToFiringQueue(preactor As IPreactor,
+                                         planningboard As IPlanningBoard,
+                                         routingDt As DataTable,
+                                         currentDate As DateTime,
+                                         ordersTable As Integer,
+                                         opNoField As Integer) As List(Of Integer)
+
+        If routingDt Is Nothing Then Throw New ArgumentNullException(NameOf(routingDt))
+
+        SharedHelpers.RequireColumn(routingDt, "OrdersID")
+        SharedHelpers.RequireColumn(routingDt, "Operation Number")
+        SharedHelpers.RequireColumn(routingDt, "Order No")
+        SharedHelpers.RequireColumn(routingDt, "is_scheduled")
+        SharedHelpers.RequireColumn(routingDt, "prev_op_is_scheduled")
+        SharedHelpers.RequireColumn(routingDt, "firing due date")
+        SharedHelpers.RequireColumn(routingDt, "Cycle Type")
+
+        Dim candidates As New List(Of PressToFiringCandidate)()
+        Dim seen As New HashSet(Of Integer)()
+
+        For Each r As DataRow In routingDt.Rows
+
+            Dim opRec As Integer = SharedHelpers.SafeInt(r("OrdersID"))
+
+            If opRec <= 0 Then Continue For
+            If seen.Contains(opRec) Then Continue For
+
+            Dim opNo As Integer = SharedHelpers.SafeInt(r("Operation Number"))
+
+            ' Press-to-firing window only.
+            If opNo <= 200 OrElse opNo >= 290 Then Continue For
+
+            ' Snapshot guard.
+            If SharedHelpers.SafeBool(r("is_scheduled")) Then Continue For
+
+            ' Live planning board guard.
+            If IsScheduledLive(planningboard, opRec) Then Continue For
+
+            Dim readyTime As DateTime? =
+            GetReadyTimeFromScheduledPredecessors(planningboard, opRec)
+
+            Dim isWip As Boolean =
+            SharedHelpers.SafeBool(r("prev_op_is_scheduled")) OrElse readyTime.HasValue
+
+            ' WIP-first requirement:
+            ' for this run, only operations whose predecessor is scheduled are eligible.
+            If Not isWip Then Continue For
+            If Not readyTime.HasValue Then Continue For
+
+            Dim dueTime As DateTime =
+            SharedHelpers.ParseDueAsEndOfDay(r("firing due date"))
+
+            If dueTime = DateTime.MinValue Then dueTime = DateTime.MaxValue
+
+            Dim cycleRank As Integer =
+            GetCycleRank(SharedHelpers.SafeStr(r("Cycle Type")))
+
+            candidates.Add(New PressToFiringCandidate With {
+            .OpRec = opRec,
+            .OrderNo = SharedHelpers.SafeStr(r("Order No")).Trim(),
+            .OpNo = opNo,
+            .IsWip = isWip,
+            .ReadyTime = readyTime.Value,
+            .DueTime = dueTime,
+            .CycleRank = cycleRank
+        })
+
+            seen.Add(opRec)
+
+        Next
+
+        Return candidates.
+        OrderByDescending(Function(c) c.IsWip).
+        ThenBy(Function(c) c.ReadyTime).
+        ThenBy(Function(c) c.DueTime).
+        ThenByDescending(Function(c) c.CycleRank).
+        ThenBy(Function(c) c.OpNo).
+        ThenBy(Function(c) c.OpRec).
+        Select(Function(c) c.OpRec).
+        ToList()
+
+    End Function
     Private Function CreateRankedQueue(ByRef preactor As IPreactor, ByVal planningboard As IPlanningBoard,
                                              ByVal ordersTable As Integer, ByVal QName As String) As Integer
 
