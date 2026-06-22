@@ -96,6 +96,12 @@
     <Compile Include="EventSeq.vb" />
     <Compile Include="firingOptimizer_vf.vb" />
     <Compile Include="Helper.vb" />
+    <Compile Include="KilnAvailabilityWindow.Designer.vb">
+      <DependentUpon>KilnAvailabilityWindow.vb</DependentUpon>
+    </Compile>
+    <Compile Include="KilnAvailabilityWindow.vb">
+      <SubType>UserControl</SubType>
+    </Compile>
     <Compile Include="LoginForm.Designer.vb">
       <DependentUpon>LoginForm.vb</DependentUpon>
     </Compile>
@@ -123,14 +129,19 @@
       <DependentUpon>Settings.settings</DependentUpon>
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
     </Compile>
+    <Compile Include="PostFiringScheduler.vb" />
     <Compile Include="Preactor Extensions.vb" />
     <Compile Include="pressingOptimizer_vf.vb" />
     <Compile Include="SharedHelpers.vb" />
+    <Compile Include="swkOptimizer_vf.vb" />
     <Compile Include="tunnelOptimizer.vb" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="DataViewExplorerForm.resx">
       <DependentUpon>DataViewExplorerForm.vb</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="KilnAvailabilityWindow.resx">
+      <DependentUpon>KilnAvailabilityWindow.vb</DependentUpon>
     </EmbeddedResource>
     <EmbeddedResource Include="LoginForm.resx">
       <DependentUpon>LoginForm.vb</DependentUpon>

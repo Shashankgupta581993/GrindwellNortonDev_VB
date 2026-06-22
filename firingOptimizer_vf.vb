@@ -35,7 +35,7 @@ Public Class firingOptimizer_vf
     Private Const COL_ORDERNO As String = "Order No"
     Private Const COL_OPREC As String = "OrdersID"
     Private Const COL_OPNO As String = "Operation Number"
-    Private Const COL_KILNTYPE As String = "Klin Type"
+    Private Const COL_KILNTYPE As String = "Kiln Type"
     Private Const COL_CYCLE As String = "Cycle Type"
     Private Const COL_OCC As String = "Volume Occupancy"
     Private Const COL_BATCHTIME As String = "Batch Time"
@@ -75,7 +75,8 @@ Public Class firingOptimizer_vf
                                            maxOcc As Double,
                                            Optional allowUnderfilledTail As Boolean = True,
                                            Optional batchStartDelayMins As Integer = 0,
-                                           Optional maxBatchesPerDayGlobal As Integer = 2) As FiringBatchPlan
+                                           Optional maxBatchesPerDayGlobal As Integer = 2,
+                                           Optional initialKilnAvailability As Dictionary(Of String, DateTime) = Nothing) As FiringBatchPlan
 
 
         ValidateInputs(dt, minOcc, maxOcc)
@@ -90,9 +91,21 @@ Public Class firingOptimizer_vf
         Dim candidates As List(Of OrderCandidate) = BuildCandidates(dt)
 
         ' Initialize kiln availability
+        'Dim kilnAvail As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+        'For Each k As String In kilnSupport.Keys
+        '    kilnAvail(k) = startTime
+        'Next
+
         Dim kilnAvail As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+
         For Each k As String In kilnSupport.Keys
-            kilnAvail(k) = startTime
+
+            If initialKilnAvailability IsNot Nothing AndAlso initialKilnAvailability.ContainsKey(k) Then
+                kilnAvail(k) = initialKilnAvailability(k)
+            Else
+                kilnAvail(k) = startTime
+            End If
+
         Next
 
         ' Assign batches iteratively
@@ -249,7 +262,7 @@ Public Class firingOptimizer_vf
     '    For Each r As DataRow In dt.Rows
 
     '        Dim kilnType As String = SafeStr(r(COL_KILNTYPE)).Trim()
-    '        If Not kilnType.Equals("1", StringComparison.OrdinalIgnoreCase) Then Continue For '' this is where I made the klin type change
+    '        If Not kilnType.Equals("1", StringComparison.OrdinalIgnoreCase) Then Continue For '' this is where I made the Kiln Type change
 
     '        Dim opNo As Integer = SafeInt(r(COL_OPNO))
     '        If opNo <> 300 Then Continue For
@@ -375,6 +388,8 @@ Public Class firingOptimizer_vf
         '         last pre-290 op completion as ReadyTime.
         ' -----------------------------------------------------------------
         Dim hasPrevCol As Boolean = dt.Columns.Contains(COL_PREVOP_IS_SCH)
+        ' Adding this here since FindMaxLoadingMins also scans dt and we want to avoid repeated scans – build a lookup of max loading mins by order
+        Dim loadingMinsByOrder As Dictionary(Of String, Integer) = BuildLoadingMinsByOrder(dt)
 
         For Each r As DataRow In dt.Rows
 
@@ -410,8 +425,12 @@ Public Class firingOptimizer_vf
             Dim firingDue As DateTime = ParseDueAsEndOfDay(r(COL_FIRING_DUE))
             If firingDue = DateTime.MinValue Then Continue For
 
-            Dim loadMins As Integer = FindMaxLoadingMins(dt, orderNo)
-            If loadMins < 0 Then Continue For
+            Dim loadMins As Integer = 0
+            If Not loadingMinsByOrder.TryGetValue(orderNo, loadMins) Then
+                Continue For
+            End If
+            'Dim loadMins As Integer = FindMaxLoadingMins(dt, orderNo)
+            'If loadMins < 0 Then Continue For
 
             Dim firingOpRec As Integer = SafeInt(r(COL_OPREC))
             If firingOpRec <= 0 Then Continue For
@@ -1490,6 +1509,32 @@ Public Class firingOptimizer_vf
         End Using
 
     End Sub
+    Private Function BuildLoadingMinsByOrder(dt As DataTable) As Dictionary(Of String, Integer)
 
+        Dim result As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+
+        For Each r As DataRow In dt.Rows
+
+            Dim opNo As Integer = SafeInt(r(COL_OPNO))
+            If opNo <> 290 AndAlso opNo <> 291 Then Continue For
+
+            Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
+            If orderNo = "" Then Continue For
+
+            Dim mins As Integer = CInt(Math.Truncate(SafeDbl(r(COL_BATCHTIME))))
+            If mins < 0 Then Continue For
+
+            Dim existing As Integer = -1
+            If result.TryGetValue(orderNo, existing) Then
+                If mins > existing Then result(orderNo) = mins
+            Else
+                result(orderNo) = mins
+            End If
+
+        Next
+
+        Return result
+
+    End Function
 
 End Class

@@ -27,7 +27,7 @@ Public Class tunnelOptimizer_vf
     Private Const COL_ORDERNO As String = "Order No"
     Private Const COL_OPREC As String = "OrdersID"
     Private Const COL_OPNO As String = "Operation Number"
-    Private Const COL_KILNTYPE As String = "Klin Type"          ' Tunnel orders: "2" (per your rule)
+    Private Const COL_KILNTYPE As String = "Kiln Type"          ' Tunnel orders: "2" (per your rule)
     Private Const COL_IS_SCHEDULED As String = "is_scheduled"
     Private Const COL_SCHED_END As String = "scheduled_end_time"
     Private Const COL_FIRING_DUE As String = "firing due date"
@@ -272,35 +272,69 @@ Public Class tunnelOptimizer_vf
     ' -----------------------------
     ' Cart packing (Rule 2 + Rule 5)
     ' -----------------------------
-    Private Function PackCart(readyNow As List(Of TunnelCandidate),
-                              minOccPreferred As Double,
-                              maxOcc As Double) As List(Of TunnelCandidate)
+    'Private Function PackCart(readyNow As List(Of TunnelCandidate),
+    '                          minOccPreferred As Double,
+    '                          maxOcc As Double) As List(Of TunnelCandidate)
 
-        ' Deterministic selection:
-        ' - iterate by earliest due date (Rule 5)
-        ' - tie by earliest ready time
-        ' - tie by larger occupancy first (fills cart quicker)
+    '    ' Deterministic selection:
+    '    ' - iterate by earliest due date (Rule 5)
+    '    ' - tie by earliest ready time
+    '    ' - tie by larger occupancy first (fills cart quicker)
+    '    Dim sorted As New List(Of TunnelCandidate)(readyNow)
+    '    sorted.Sort(AddressOf CompareByDueReadyOcc)
+
+    '    Dim chosen As New List(Of TunnelCandidate)()
+    '    Dim occSum As Double = 0.0
+
+    '    For Each c In sorted
+    '        If occSum + c.Occ <= maxOcc + 0.0000001 Then
+    '            chosen.Add(c)
+    '            occSum += c.Occ
+
+    '            ' MinOccPreferred is only a preference:
+    '            ' once we reach it, we *may still add* if there is space, but we stop early
+    '            ' to keep carts moving (and reduce late risk). This is conservative and deterministic.
+    '            'If occSum + 0.0000001 >= minOccPreferred Then
+    '            '    Exit For
+    '            'End If
+    '        End If
+    '    Next
+
+    '    ' If we didn't reach minOccPreferred, we still return what we have (preference, not hard).
+    '    Return chosen
+    'End Function
+
+    Private Function PackCart(readyNow As List(Of TunnelCandidate),
+                          minOccPreferred As Double,
+                          maxOcc As Double) As List(Of TunnelCandidate)
+
         Dim sorted As New List(Of TunnelCandidate)(readyNow)
         sorted.Sort(AddressOf CompareByDueReadyOcc)
 
         Dim chosen As New List(Of TunnelCandidate)()
         Dim occSum As Double = 0.0
 
+        ' First preserve EDD: take the most urgent feasible order.
         For Each c In sorted
-            If occSum + c.Occ <= maxOcc + 0.0000001 Then
+            If c.Occ <= maxOcc + 0.0000001 Then
                 chosen.Add(c)
                 occSum += c.Occ
-
-                ' MinOccPreferred is only a preference:
-                ' once we reach it, we *may still add* if there is space, but we stop early
-                ' to keep carts moving (and reduce late risk). This is conservative and deterministic.
-                If occSum + 0.0000001 >= minOccPreferred Then
-                    Exit For
-                End If
+                Exit For
             End If
         Next
 
-        ' If we didn't reach minOccPreferred, we still return what we have (preference, not hard).
+        If chosen.Count = 0 Then Return chosen
+
+        ' Then fill remaining space with any ready order that fits.
+        For Each c In sorted
+            If chosen.Contains(c) Then Continue For
+
+            If occSum + c.Occ <= maxOcc + 0.0000001 Then
+                chosen.Add(c)
+                occSum += c.Occ
+            End If
+        Next
+
         Return chosen
     End Function
 
