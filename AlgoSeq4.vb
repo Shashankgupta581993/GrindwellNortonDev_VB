@@ -111,7 +111,8 @@ Public Class AlgoSeq4
 
             ' Handle Previous Operation
             Dim PREVIOUSOP As Integer = planningboard.GetPreviousOperation(firingOpRec, 1)
-            If PREVIOUSOP > 0 Then
+            If PREVIOUSOP > 0 AndAlso
+                Not SharedHelpers.IsCompletedOrActualizedOp(routingDt, PREVIOUSOP) Then
                 Try
                     Times = planningboard.BackTestOpOnResource(PREVIOUSOP, LOADBICK, batchStart)
                     If Times.HasValue Then
@@ -124,7 +125,8 @@ Public Class AlgoSeq4
 
             ' Handle Next Operations
             Dim NEXTOP As Integer = planningboard.GetNextOperation(firingOpRec, 1)
-            If NEXTOP > 0 Then
+            If NEXTOP > 0 AndAlso
+   Not SharedHelpers.IsCompletedOrActualizedOp(routingDt, NEXTOP) Then
                 ' LAZY EVALUATION: Maintained from original logic
                 Dim batchEnd As DateTime = plan.BatchEndByBatchNo(batchNo)
 
@@ -138,7 +140,8 @@ Public Class AlgoSeq4
 
                 ' Re-evaluate for the subsequent operation in the sequence
                 NEXTOP = planningboard.GetNextOperation(NEXTOP, 1)
-                If NEXTOP > 0 Then
+                If NEXTOP > 0 AndAlso
+   Not SharedHelpers.IsCompletedOrActualizedOp(routingDt, NEXTOP) Then
                     Try
                         Times = planningboard.TestOperationOnResource(NEXTOP, PREINSPC, batchEnd)
                         If Times.HasValue Then
@@ -148,7 +151,8 @@ Public Class AlgoSeq4
                     End Try
 
                     NEXTOP = planningboard.GetNextOperation(NEXTOP, 1)
-                    If NEXTOP > 0 Then
+                    If NEXTOP > 0 AndAlso
+   Not SharedHelpers.IsCompletedOrActualizedOp(routingDt, NEXTOP) Then
                         Try
                             Times = planningboard.TestOperationOnResource(NEXTOP, KILNACK, batchEnd)
                             If Times.HasValue Then
@@ -1251,11 +1255,12 @@ Public Class AlgoSeq4
             ' Schedule this operation and all following unscheduled operations
             ' until firing/loading starts.
             SchedulePressToFiringChain(preactor,
-                                   planningboard,
-                                   ordersTable,
-                                   opNoField,
-                                   airDryResourceRec,
-                                   opRec)
+                       planningboard,
+                       ordersTable,
+                       opNoField,
+                       airDryResourceRec,
+                       routingDt,
+                       opRec)
 
         End While
 
@@ -1264,11 +1269,12 @@ Public Class AlgoSeq4
 
     End Function
     Private Sub SchedulePressToFiringChain(preactor As IPreactor,
-                                       planningboard As IPlanningBoard,
-                                       ordersTable As Integer,
-                                       opNoField As Integer,
-                                       airDryResourceRec As Integer,
-                                       startOpRec As Integer)
+                                   planningboard As IPlanningBoard,
+                                   ordersTable As Integer,
+                                   opNoField As Integer,
+                                   airDryResourceRec As Integer,
+                                   routingDt As DataTable,
+                                   startOpRec As Integer)
 
         Dim opRec As Integer = startOpRec
 
@@ -1286,9 +1292,26 @@ Public Class AlgoSeq4
                 ' Never reschedule an already scheduled operation.
                 If Not IsScheduledLive(planningboard, opRec) Then
 
-                    Dim readyTime As DateTime? =
-                    GetReadyTimeFromScheduledPredecessors(planningboard, opRec)
+                    'Dim readyTime As DateTime? =
+                    'GetReadyTimeFromScheduledPredecessors(planningboard, opRec)
+                    Dim readyTime As DateTime?
 
+                    If opRec = startOpRec Then
+
+                        Dim wipReadyTime As DateTime =
+        GetWipReadyTimeFromRouting(routingDt, opRec)
+
+                        If wipReadyTime = DateTime.MinValue Then
+                            readyTime = Nothing
+                        Else
+                            readyTime = wipReadyTime
+                        End If
+
+                    Else
+
+                        readyTime = GetReadyTimeFromScheduledPredecessors(planningboard, opRec)
+
+                    End If
                     If Not readyTime.HasValue Then
                         Exit While
                     End If
@@ -1340,6 +1363,8 @@ Public Class AlgoSeq4
         Public Property ReadyTime As DateTime
         Public Property DueTime As DateTime
         Public Property CycleRank As Integer
+
+        Public Property WipScore As Integer
     End Class
 
     Private Structure Placement
@@ -1358,7 +1383,22 @@ Public Class AlgoSeq4
         Return times.HasValue
 
     End Function
+    Private Function GetWipReadyTimeFromRouting(routingDt As DataTable,
+                                            opRec As Integer) As DateTime
 
+        If routingDt Is Nothing OrElse opRec <= 0 Then Return DateTime.MinValue
+
+        For Each r As DataRow In routingDt.Rows
+
+            If SharedHelpers.SafeInt(r("OrdersID")) = opRec Then
+                Return SharedHelpers.SafeDate(r("wip_ready_time"))
+            End If
+
+        Next
+
+        Return DateTime.MinValue
+
+    End Function
     Private Function GetReadyTimeFromScheduledPredecessors(planningboard As IPlanningBoard,
                                                        opRec As Integer) As DateTime?
 
@@ -1449,6 +1489,9 @@ Public Class AlgoSeq4
         SharedHelpers.RequireColumn(routingDt, "prev_op_is_scheduled")
         SharedHelpers.RequireColumn(routingDt, "firing due date")
         SharedHelpers.RequireColumn(routingDt, "Cycle Type")
+        SharedHelpers.RequireColumn(routingDt, "wip_status")
+        SharedHelpers.RequireColumn(routingDt, "wip_ready_time")
+        SharedHelpers.RequireColumn(routingDt, "wip_score")
 
         Dim candidates As New List(Of PressToFiringCandidate)()
         Dim seen As New HashSet(Of Integer)()
@@ -1471,16 +1514,32 @@ Public Class AlgoSeq4
             ' Live planning board guard.
             If IsScheduledLive(planningboard, opRec) Then Continue For
 
-            Dim readyTime As DateTime? =
-            GetReadyTimeFromScheduledPredecessors(planningboard, opRec)
+            'Dim readyTime As DateTime? =
+            'GetReadyTimeFromScheduledPredecessors(planningboard, opRec)
 
-            Dim isWip As Boolean =
-            SharedHelpers.SafeBool(r("prev_op_is_scheduled")) OrElse readyTime.HasValue
+            'Dim isWip As Boolean =
+            'SharedHelpers.SafeBool(r("prev_op_is_scheduled")) OrElse readyTime.HasValue
 
-            ' WIP-first requirement:
-            ' for this run, only operations whose predecessor is scheduled are eligible.
-            If Not isWip Then Continue For
-            If Not readyTime.HasValue Then Continue For
+            '' WIP-first requirement:
+            '' for this run, only operations whose predecessor is scheduled are eligible.
+            'If Not isWip Then Continue For
+            'If Not readyTime.HasValue Then Continue For
+            Dim wipStatus As String =
+    SharedHelpers.SafeStr(r("wip_status")).Trim()
+
+            If Not wipStatus.Equals("Candidate", StringComparison.OrdinalIgnoreCase) Then
+                Continue For
+            End If
+
+            Dim readyTime As DateTime =
+    SharedHelpers.SafeDate(r("wip_ready_time"))
+
+            If readyTime = DateTime.MinValue Then Continue For
+
+            Dim wipScore As Integer =
+    SharedHelpers.SafeInt(r("wip_score"))
+
+            Dim isWip As Boolean = wipScore > 0
 
             Dim dueTime As DateTime =
             SharedHelpers.ParseDueAsEndOfDay(r("firing due date"))
@@ -1495,7 +1554,8 @@ Public Class AlgoSeq4
             .OrderNo = SharedHelpers.SafeStr(r("Order No")).Trim(),
             .OpNo = opNo,
             .IsWip = isWip,
-            .ReadyTime = readyTime.Value,
+            .ReadyTime = readyTime,
+            .WipScore = wipScore,
             .DueTime = dueTime,
             .CycleRank = cycleRank
         })
@@ -1505,7 +1565,7 @@ Public Class AlgoSeq4
         Next
 
         Return candidates.
-        OrderByDescending(Function(c) c.IsWip).
+        OrderByDescending(Function(c) c.WipScore).
         ThenBy(Function(c) c.ReadyTime).
         ThenBy(Function(c) c.DueTime).
         ThenByDescending(Function(c) c.CycleRank).

@@ -31,6 +31,23 @@ Public Module SharedHelpers
 
         Public Property CandidateStatus As String
         Public Property RejectReason As String
+
+        Public Property CurrentOpCompleted As Boolean
+        Public Property CurrentOpActualized As Boolean
+
+        Public Property PrevOpReleased As Boolean
+        Public Property PrevOpReleaseTime As DateTime
+
+        Public Property CurrentOpReleased As Boolean
+        Public Property CurrentOpReleaseTime As DateTime
+
+        Public Property HasAnyPriorReleased As Boolean
+        Public Property LastPriorReleasedOpNo As Integer
+        Public Property LastPriorReleasedOpRec As Integer
+
+        Public Property ExecutionStatus As String
+        Public Property StatusConflict As Boolean
+        Public Property StatusReason As String
     End Class
     Public Sub RequireColumn(dt As DataTable, name As String)
         If Not dt.Columns.Contains(name) Then Throw New ArgumentException($"Missing required column: '{name}'")
@@ -70,7 +87,69 @@ Public Module SharedHelpers
         Dim s As String = o.ToString().Trim().ToUpperInvariant()
         Return s = "TRUE" OrElse s = "T" OrElse s = "1" OrElse s = "YES" OrElse s = "Y"
     End Function
+    Public Function TryGetFieldNumber(preactor As IPreactor,
+                                  formatNo As Integer,
+                                  fieldName As String) As Integer
+        If preactor Is Nothing Then Return 0
+        If formatNo <= 0 Then Return 0
+        If String.IsNullOrWhiteSpace(fieldName) Then Return 0
 
+        Try
+            Return preactor.GetFieldNumber(formatNo, fieldName)
+        Catch
+            Return 0
+        End Try
+    End Function
+
+    Public Function ResolveFirstExistingField(preactor As IPreactor,
+                                          formatNo As Integer,
+                                          fieldNames As String()) As Integer
+        If fieldNames Is Nothing Then Return 0
+
+        For Each fieldName As String In fieldNames
+            Dim fieldNo As Integer = TryGetFieldNumber(preactor, formatNo, fieldName)
+            If fieldNo > 0 Then Return fieldNo
+        Next
+
+        Return 0
+    End Function
+
+    Public Function ReadBoolField(preactor As IPreactor,
+                              formatNo As Integer,
+                              fieldNo As Integer,
+                              recNo As Integer) As Boolean
+        If fieldNo <= 0 Then Return False
+
+        Try
+            Return preactor.ReadFieldBool(formatNo, fieldNo, recNo)
+        Catch
+        End Try
+
+        Try
+            Return preactor.ReadFieldInt(formatNo, fieldNo, recNo) <> 0
+        Catch
+        End Try
+
+        Try
+            Return SafeBool(preactor.ReadFieldString(formatNo, fieldNo, recNo))
+        Catch
+        End Try
+
+        Return False
+    End Function
+
+    Public Function ReadDateField(preactor As IPreactor,
+                              formatNo As Integer,
+                              fieldNo As Integer,
+                              recNo As Integer) As DateTime
+        If fieldNo <= 0 Then Return DateTime.MinValue
+
+        Try
+            Return preactor.ReadFieldDateTime(formatNo, fieldNo, recNo)
+        Catch
+            Return DateTime.MinValue
+        End Try
+    End Function
     Public Function SafeArray(arr As String(), idx As Integer) As String
         If arr Is Nothing Then Return ""
         If idx < 0 OrElse idx >= arr.Length Then Return ""
@@ -211,6 +290,24 @@ Public Module SharedHelpers
     "Wheel Dia", "Wheel thickness", "Week start", "Pressing earliest start", "Pressing Due date",
     "Constaint Usage", "Constraint Qty", "firing earliest start date", "firing due date",
     "scheduled_start_time", "scheduled_end_time", "is_scheduled", "parent_record", "prev_op_is_scheduled",
+    "source_is_completed",
+    "opcenter_use_actual",
+    "actual_start_time",
+    "actual_end_time",
+    "order_last_completed_op_no",
+    "order_last_completed_op_rec",
+    "order_last_completed_release_time",
+    "operation_effective_completed",
+    "operation_execution_status",
+    "operation_releases_next",
+    "operation_release_time",
+    "operation_status_conflict",
+    "operation_status_reason",
+    "wip_prev_op_released",
+    "wip_prev_op_release_time",
+    "wip_any_prior_released",
+    "wip_last_prior_released_op_no",
+    "wip_last_prior_released_op_rec",
     "wip_current_op_scheduled",
     "wip_current_op_started",
     "wip_prev_op_rec",
@@ -224,7 +321,7 @@ Public Module SharedHelpers
     "wip_score",
     "wip_status",
     "wip_reject_reason"
-}
+        }
         For Each c In cols
             dt.Columns.Add(New DataColumn(c, GetType(Object)))
         Next
@@ -267,6 +364,44 @@ Public Module SharedHelpers
         Dim wheelPin = preactor.GetFieldNumber(ordersTable, "String Attribute 3")
         Dim schStart = preactor.GetFieldNumber(ordersTable, "Start Time")
         Dim schEnd = preactor.GetFieldNumber(ordersTable, "End Time")
+        ' Source completion flag imported into Opcenter.
+        ' Per current design: Toggle Attribute 1 = is_completed.
+        Dim sourceCompletedField As Integer =
+    TryGetFieldNumber(preactor, ordersTable, "Toggle Attribute 1")
+
+        ' Opcenter actualization flag.
+        Dim useActualField As Integer =
+    ResolveFirstExistingField(preactor,
+                              ordersTable,
+                              New String() {
+                                  "Use Actual",
+                                  "Use Actual Times",
+                                  "USE ACTUAL TIMES",
+                                  "Use actual"
+                              })
+
+        ' Actual time fields. If your actual end has a different name,
+        ' add it to this list before "End Time".
+        Dim actualStartField As Integer =
+    ResolveFirstExistingField(preactor,
+                              ordersTable,
+                              New String() {
+                                  "Actual Start Time",
+                                  "Actual Start",
+                                  "Actual Start Date",
+                                  "Start Time Actual"
+                              })
+
+        Dim actualEndField As Integer =
+    ResolveFirstExistingField(preactor,
+                              ordersTable,
+                              New String() {
+                                  "Actual End Time",
+                                  "Actual End",
+                                  "Actual Finish Time",
+                                  "Actual End Date",
+                                  "End Time Actual"
+                              })
         'Dim parentRecord = preactor.GetFieldNumber(ordersTable, "Belongs to Order No.")
         Dim rowCount = preactor.RecordCount(ordersTable)
         Dim parentRecordByOrderNo As New Dictionary(Of String, Integer)(
@@ -321,7 +456,39 @@ Public Module SharedHelpers
                 r("scheduled_start_time") = preactor.ReadFieldDateTime(ordersTable, schStart, rec)
                 r("scheduled_end_time") = preactor.ReadFieldDateTime(ordersTable, schEnd, rec)
             End If
+            Dim sourceCompleted As Boolean =
+            ReadBoolField(preactor, ordersTable, sourceCompletedField, rec)
 
+            Dim useActual As Boolean =
+            ReadBoolField(preactor, ordersTable, useActualField, rec)
+
+            Dim actualStartValue As DateTime =
+            ReadDateField(preactor, ordersTable, actualStartField, rec)
+
+            Dim actualEndValue As DateTime =
+            ReadDateField(preactor, ordersTable, actualEndField, rec)
+
+            ' Fallback:
+            ' If Opcenter uses Start Time / End Time as actual time when Use Actual is checked,
+            ' read End Time as actual end only when Use Actual is true.
+            If actualEndValue = DateTime.MinValue AndAlso useActual AndAlso schEnd > 0 Then
+                actualEndValue = ReadDateField(preactor, ordersTable, schEnd, rec)
+            End If
+
+            If actualStartValue = DateTime.MinValue AndAlso useActual AndAlso schStart > 0 Then
+                actualStartValue = ReadDateField(preactor, ordersTable, schStart, rec)
+            End If
+
+            r("source_is_completed") = sourceCompleted
+            r("opcenter_use_actual") = useActual
+
+            If actualStartValue <> DateTime.MinValue Then
+                r("actual_start_time") = actualStartValue
+            End If
+
+            If actualEndValue <> DateTime.MinValue Then
+                r("actual_end_time") = actualEndValue
+            End If
             ' 4. Cache the first operation record for each order. This replaces
             ' one FindMatchingRecord COM call per operation.
             Dim parentRecord As Integer
@@ -417,32 +584,119 @@ Public Module SharedHelpers
 
     End Function
 
+    'Private Function CreateWipInfo(targetRow As DataRow,
+    '                               prevRow As DataRow,
+    '                               hasAnyPriorScheduled As Boolean,
+    '                               lastPriorScheduledOpNo As Integer,
+    '                               hasFutureScheduledOp As Boolean,
+    '                               terminatorTime As DateTime,
+    '                               readyBufferMinutes As Integer,
+    '                               requirePrevScheduled As Boolean) As WipInfo
+
+    '    Dim result As New WipInfo With {
+    '        .CurrentOpRec = SafeInt(targetRow("OrdersID")),
+    '        .CurrentOpNo = SafeInt(targetRow("Operation Number")),
+    '        .ParentRecord = GetEffectiveParentRecord(targetRow),
+    '        .CurrentOpScheduled = SafeBool(targetRow("is_scheduled")),
+    '        .CurrentOpStarted = False,
+    '        .HasAnyPriorScheduled = hasAnyPriorScheduled,
+    '        .LastPriorScheduledOpNo = lastPriorScheduledOpNo,
+    '        .HasFutureScheduledOp = hasFutureScheduledOp
+    '    }
+
+    '    Dim startT As DateTime = SafeDate(targetRow("scheduled_start_time"))
+    '    If startT <> DateTime.MinValue AndAlso startT <= terminatorTime Then
+    '        result.CurrentOpStarted = True
+    '    End If
+
+    '    If prevRow IsNot Nothing Then
+    '        result.PrevOpRec = SafeInt(prevRow("OrdersID"))
+    '        result.PrevOpNo = SafeInt(prevRow("Operation Number"))
+    '        result.PrevOpScheduled = SafeBool(prevRow("is_scheduled"))
+
+    '        If result.PrevOpScheduled Then
+    '            result.PrevOpEndTime = SafeDate(prevRow("scheduled_end_time"))
+    '        End If
+    '    End If
+
+    '    If result.PrevOpScheduled AndAlso result.PrevOpEndTime <> DateTime.MinValue Then
+    '        result.ReadyTime = result.PrevOpEndTime.AddMinutes(readyBufferMinutes)
+    '    Else
+    '        result.ReadyTime = DateTime.MinValue
+    '    End If
+
+    '    If result.LastPriorScheduledOpNo > 0 Then
+    '        result.WipScore = 1000 + result.LastPriorScheduledOpNo
+    '    Else
+    '        result.WipScore = 0
+    '    End If
+
+    '    result.CandidateStatus = "Candidate"
+    '    result.RejectReason = ""
+
+    '    If result.CurrentOpScheduled Then
+    '        result.CandidateStatus = "Rejected"
+    '        result.RejectReason = "Current operation already scheduled"
+    '    ElseIf result.CurrentOpStarted Then
+    '        result.CandidateStatus = "Rejected"
+    '        result.RejectReason = "Current operation already started or historical"
+    '    ElseIf result.HasFutureScheduledOp Then
+    '        result.CandidateStatus = "Rejected"
+    '        result.RejectReason = "Future operation already scheduled"
+    '    ElseIf requirePrevScheduled AndAlso result.PrevOpRec <= 0 Then
+    '        result.CandidateStatus = "Rejected"
+    '        result.RejectReason = "No previous operation found"
+    '    ElseIf requirePrevScheduled AndAlso Not result.PrevOpScheduled Then
+    '        result.CandidateStatus = "Rejected"
+    '        result.RejectReason = "Previous operation not scheduled"
+    '    ElseIf requirePrevScheduled AndAlso result.PrevOpEndTime = DateTime.MinValue Then
+    '        result.CandidateStatus = "Rejected"
+    '        result.RejectReason = "Previous operation has no valid end time"
+    '    End If
+
+    '    Return result
+
+    'End Function
     Private Function CreateWipInfo(targetRow As DataRow,
-                                   prevRow As DataRow,
-                                   hasAnyPriorScheduled As Boolean,
-                                   lastPriorScheduledOpNo As Integer,
-                                   hasFutureScheduledOp As Boolean,
-                                   terminatorTime As DateTime,
-                                   readyBufferMinutes As Integer,
-                                   requirePrevScheduled As Boolean) As WipInfo
+                               prevRow As DataRow,
+                               hasAnyPriorScheduled As Boolean,
+                               lastPriorScheduledOpNo As Integer,
+                               hasFutureScheduledOp As Boolean,
+                               terminatorTime As DateTime,
+                               readyBufferMinutes As Integer,
+                               requirePrevScheduled As Boolean,
+                               Optional lastPriorReleasedOpRec As Integer = 0) As WipInfo
 
         Dim result As New WipInfo With {
-            .CurrentOpRec = SafeInt(targetRow("OrdersID")),
-            .CurrentOpNo = SafeInt(targetRow("Operation Number")),
-            .ParentRecord = GetEffectiveParentRecord(targetRow),
-            .CurrentOpScheduled = SafeBool(targetRow("is_scheduled")),
-            .CurrentOpStarted = False,
-            .HasAnyPriorScheduled = hasAnyPriorScheduled,
-            .LastPriorScheduledOpNo = lastPriorScheduledOpNo,
-            .HasFutureScheduledOp = hasFutureScheduledOp
-        }
+        .CurrentOpRec = SafeInt(targetRow("OrdersID")),
+        .CurrentOpNo = SafeInt(targetRow("Operation Number")),
+        .ParentRecord = GetEffectiveParentRecord(targetRow),
+        .CurrentOpScheduled = SafeBool(targetRow("is_scheduled")),
+        .CurrentOpStarted = False,
+        .CurrentOpCompleted = SafeBool(targetRow("operation_effective_completed")),
+        .CurrentOpActualized = SafeBool(targetRow("opcenter_use_actual")) AndAlso
+                              SafeDate(targetRow("actual_end_time")) <> DateTime.MinValue,
+        .CurrentOpReleased = SafeBool(targetRow("operation_releases_next")),
+        .CurrentOpReleaseTime = SafeDate(targetRow("operation_release_time")),
+        .HasAnyPriorReleased = hasAnyPriorScheduled,
+        .LastPriorReleasedOpNo = lastPriorScheduledOpNo,
+        .LastPriorReleasedOpRec = lastPriorReleasedOpRec,
+        .HasAnyPriorScheduled = hasAnyPriorScheduled,
+        .LastPriorScheduledOpNo = lastPriorScheduledOpNo,
+        .HasFutureScheduledOp = hasFutureScheduledOp,
+        .ExecutionStatus = SafeStr(targetRow("operation_execution_status")),
+        .StatusConflict = SafeBool(targetRow("operation_status_conflict")),
+        .StatusReason = SafeStr(targetRow("operation_status_reason"))
+    }
 
         Dim startT As DateTime = SafeDate(targetRow("scheduled_start_time"))
+
         If startT <> DateTime.MinValue AndAlso startT <= terminatorTime Then
             result.CurrentOpStarted = True
         End If
 
         If prevRow IsNot Nothing Then
+
             result.PrevOpRec = SafeInt(prevRow("OrdersID"))
             result.PrevOpNo = SafeInt(prevRow("Operation Number"))
             result.PrevOpScheduled = SafeBool(prevRow("is_scheduled"))
@@ -450,16 +704,20 @@ Public Module SharedHelpers
             If result.PrevOpScheduled Then
                 result.PrevOpEndTime = SafeDate(prevRow("scheduled_end_time"))
             End If
+
+            result.PrevOpReleased = SafeBool(prevRow("operation_releases_next"))
+            result.PrevOpReleaseTime = SafeDate(prevRow("operation_release_time"))
+
         End If
 
-        If result.PrevOpScheduled AndAlso result.PrevOpEndTime <> DateTime.MinValue Then
-            result.ReadyTime = result.PrevOpEndTime.AddMinutes(readyBufferMinutes)
+        If result.PrevOpReleased AndAlso result.PrevOpReleaseTime <> DateTime.MinValue Then
+            result.ReadyTime = result.PrevOpReleaseTime.AddMinutes(readyBufferMinutes)
         Else
             result.ReadyTime = DateTime.MinValue
         End If
 
-        If result.LastPriorScheduledOpNo > 0 Then
-            result.WipScore = 1000 + result.LastPriorScheduledOpNo
+        If result.LastPriorReleasedOpNo > 0 Then
+            result.WipScore = 1000 + result.LastPriorReleasedOpNo
         Else
             result.WipScore = 0
         End If
@@ -467,24 +725,41 @@ Public Module SharedHelpers
         result.CandidateStatus = "Candidate"
         result.RejectReason = ""
 
-        If result.CurrentOpScheduled Then
+        If result.CurrentOpCompleted OrElse result.CurrentOpActualized Then
+
+            result.CandidateStatus = "Rejected"
+            result.RejectReason = "Current operation already completed/actualized"
+
+        ElseIf result.CurrentOpScheduled Then
+
             result.CandidateStatus = "Rejected"
             result.RejectReason = "Current operation already scheduled"
+
         ElseIf result.CurrentOpStarted Then
+
             result.CandidateStatus = "Rejected"
             result.RejectReason = "Current operation already started or historical"
+
         ElseIf result.HasFutureScheduledOp Then
+
             result.CandidateStatus = "Rejected"
-            result.RejectReason = "Future operation already scheduled"
+            result.RejectReason = "Future operation already scheduled or completed"
+
         ElseIf requirePrevScheduled AndAlso result.PrevOpRec <= 0 Then
+
             result.CandidateStatus = "Rejected"
             result.RejectReason = "No previous operation found"
-        ElseIf requirePrevScheduled AndAlso Not result.PrevOpScheduled Then
+
+        ElseIf requirePrevScheduled AndAlso Not result.PrevOpReleased Then
+
             result.CandidateStatus = "Rejected"
-            result.RejectReason = "Previous operation not scheduled"
-        ElseIf requirePrevScheduled AndAlso result.PrevOpEndTime = DateTime.MinValue Then
+            result.RejectReason = "Previous operation not released"
+
+        ElseIf requirePrevScheduled AndAlso result.ReadyTime = DateTime.MinValue Then
+
             result.CandidateStatus = "Rejected"
-            result.RejectReason = "Previous operation has no valid end time"
+            result.RejectReason = "Previous operation has no valid release time"
+
         End If
 
         Return result
@@ -496,30 +771,248 @@ Public Module SharedHelpers
            wip.CandidateStatus.Equals("Candidate", StringComparison.OrdinalIgnoreCase)
     End Function
 
+    'Private Sub WriteWipColumns(row As DataRow, wip As WipInfo)
+
+    '    row("wip_current_op_scheduled") = wip.CurrentOpScheduled
+    '    row("wip_current_op_started") = wip.CurrentOpStarted
+    '    row("wip_prev_op_rec") = wip.PrevOpRec
+    '    row("wip_prev_op_no") = wip.PrevOpNo
+    '    row("wip_prev_op_scheduled") = wip.PrevOpScheduled
+    '    row("wip_prev_op_end_time") =
+    '        If(wip.PrevOpEndTime = DateTime.MinValue,
+    '           CType(DBNull.Value, Object),
+    '           CType(wip.PrevOpEndTime, Object))
+    '    row("wip_any_prior_scheduled") = wip.HasAnyPriorScheduled
+    '    row("wip_last_prior_scheduled_op_no") = wip.LastPriorScheduledOpNo
+    '    row("wip_has_future_scheduled_op") = wip.HasFutureScheduledOp
+    '    row("wip_ready_time") =
+    '        If(wip.ReadyTime = DateTime.MinValue,
+    '           CType(DBNull.Value, Object),
+    '           CType(wip.ReadyTime, Object))
+    '    row("wip_score") = wip.WipScore
+    '    row("wip_status") = wip.CandidateStatus
+    '    row("wip_reject_reason") = wip.RejectReason
+
+    'End Sub
     Private Sub WriteWipColumns(row As DataRow, wip As WipInfo)
 
         row("wip_current_op_scheduled") = wip.CurrentOpScheduled
         row("wip_current_op_started") = wip.CurrentOpStarted
+
         row("wip_prev_op_rec") = wip.PrevOpRec
         row("wip_prev_op_no") = wip.PrevOpNo
         row("wip_prev_op_scheduled") = wip.PrevOpScheduled
+
         row("wip_prev_op_end_time") =
-            If(wip.PrevOpEndTime = DateTime.MinValue,
-               CType(DBNull.Value, Object),
-               CType(wip.PrevOpEndTime, Object))
-        row("wip_any_prior_scheduled") = wip.HasAnyPriorScheduled
-        row("wip_last_prior_scheduled_op_no") = wip.LastPriorScheduledOpNo
+        If(wip.PrevOpEndTime = DateTime.MinValue,
+           CType(DBNull.Value, Object),
+           CType(wip.PrevOpEndTime, Object))
+
+        ' Backward compatibility:
+        ' Existing optimizers still read these scheduled-column names.
+        ' Now they represent released WIP depth.
+        row("wip_any_prior_scheduled") = wip.HasAnyPriorReleased
+        row("wip_last_prior_scheduled_op_no") = wip.LastPriorReleasedOpNo
+
+        row("wip_prev_op_released") = wip.PrevOpReleased
+
+        row("wip_prev_op_release_time") =
+        If(wip.PrevOpReleaseTime = DateTime.MinValue,
+           CType(DBNull.Value, Object),
+           CType(wip.PrevOpReleaseTime, Object))
+
+        row("wip_any_prior_released") = wip.HasAnyPriorReleased
+        row("wip_last_prior_released_op_no") = wip.LastPriorReleasedOpNo
+        row("wip_last_prior_released_op_rec") = wip.LastPriorReleasedOpRec
+
         row("wip_has_future_scheduled_op") = wip.HasFutureScheduledOp
+
         row("wip_ready_time") =
-            If(wip.ReadyTime = DateTime.MinValue,
-               CType(DBNull.Value, Object),
-               CType(wip.ReadyTime, Object))
+        If(wip.ReadyTime = DateTime.MinValue,
+           CType(DBNull.Value, Object),
+           CType(wip.ReadyTime, Object))
+
         row("wip_score") = wip.WipScore
         row("wip_status") = wip.CandidateStatus
         row("wip_reject_reason") = wip.RejectReason
 
     End Sub
+    Private Function IsProgressMarker(row As DataRow) As Boolean
 
+        If row Is Nothing Then Return False
+
+        ' Source Y is authoritative for imported progress boundary.
+        If SafeBool(row("source_is_completed")) Then Return True
+
+        ' Use Actual with actual end is also progress evidence.
+        If SafeBool(row("opcenter_use_actual")) AndAlso
+       SafeDate(row("actual_end_time")) <> DateTime.MinValue Then
+            Return True
+        End If
+
+        Return False
+
+    End Function
+
+    Private Function ResolveProgressReleaseTime(row As DataRow,
+                                            terminatorTime As DateTime) As DateTime
+
+        If row Is Nothing Then Return DateTime.MinValue
+
+        Dim actualEnd As DateTime = SafeDate(row("actual_end_time"))
+        If actualEnd <> DateTime.MinValue Then Return actualEnd
+
+        Dim scheduledEnd As DateTime = SafeDate(row("scheduled_end_time"))
+        If scheduledEnd <> DateTime.MinValue Then Return scheduledEnd
+
+        If SafeBool(row("source_is_completed")) Then
+            Return terminatorTime
+        End If
+
+        Return DateTime.MinValue
+
+    End Function
+
+    Private Function ResolveScheduledReleaseTime(row As DataRow) As DateTime
+
+        If row Is Nothing Then Return DateTime.MinValue
+
+        If Not SafeBool(row("is_scheduled")) Then Return DateTime.MinValue
+
+        Return SafeDate(row("scheduled_end_time"))
+
+    End Function
+
+    Private Sub WriteOperationProgressColumns(row As DataRow,
+                                          boundaryOpNo As Integer,
+                                          boundaryOpRec As Integer,
+                                          boundaryReleaseTime As DateTime,
+                                          terminatorTime As DateTime)
+
+        Dim opNo As Integer = SafeInt(row("Operation Number"))
+
+        row("order_last_completed_op_no") = boundaryOpNo
+        row("order_last_completed_op_rec") = boundaryOpRec
+
+        row("order_last_completed_release_time") =
+        If(boundaryReleaseTime = DateTime.MinValue,
+           CType(DBNull.Value, Object),
+           CType(boundaryReleaseTime, Object))
+
+        Dim effectiveCompleted As Boolean =
+        boundaryOpNo > 0 AndAlso opNo > 0 AndAlso opNo <= boundaryOpNo
+
+        row("operation_effective_completed") = effectiveCompleted
+
+        Dim releaseTime As DateTime = DateTime.MinValue
+        Dim releasesNext As Boolean = False
+        Dim status As String = "Pending"
+        Dim conflict As Boolean = False
+        Dim reason As String = ""
+
+        If effectiveCompleted Then
+
+            releasesNext = True
+
+            If opNo = boundaryOpNo Then
+                releaseTime = boundaryReleaseTime
+                status = "CompletedBoundary"
+            Else
+                releaseTime = ResolveProgressReleaseTime(row, terminatorTime)
+                If releaseTime = DateTime.MinValue Then releaseTime = terminatorTime
+
+                status = "CompletedByBoundaryInference"
+
+                If Not IsProgressMarker(row) Then
+                    conflict = True
+                    reason = "Completion inferred because a later operation is completed"
+                End If
+            End If
+
+            If releaseTime = DateTime.MinValue Then releaseTime = terminatorTime
+
+        Else
+
+            Dim scheduledRelease As DateTime =
+            ResolveScheduledReleaseTime(row)
+
+            If scheduledRelease <> DateTime.MinValue Then
+                releasesNext = True
+                releaseTime = scheduledRelease
+                status = "PlannedScheduled"
+            Else
+                releasesNext = False
+                releaseTime = DateTime.MinValue
+                status = "Pending"
+            End If
+
+        End If
+
+        row("operation_execution_status") = status
+        row("operation_releases_next") = releasesNext
+
+        row("operation_release_time") =
+        If(releaseTime = DateTime.MinValue,
+           CType(DBNull.Value, Object),
+           CType(releaseTime, Object))
+
+        row("operation_status_conflict") = conflict
+        row("operation_status_reason") = reason
+
+    End Sub
+
+    Public Function IsCompletedOrActualizedRow(row As DataRow) As Boolean
+        If row Is Nothing Then Return False
+
+        If row.Table.Columns.Contains("operation_effective_completed") AndAlso
+       SafeBool(row("operation_effective_completed")) Then
+            Return True
+        End If
+
+        If row.Table.Columns.Contains("source_is_completed") AndAlso
+       SafeBool(row("source_is_completed")) Then
+            Return True
+        End If
+
+        If row.Table.Columns.Contains("opcenter_use_actual") AndAlso
+       SafeBool(row("opcenter_use_actual")) AndAlso
+       row.Table.Columns.Contains("actual_end_time") AndAlso
+       SafeDate(row("actual_end_time")) <> DateTime.MinValue Then
+            Return True
+        End If
+
+        Return False
+    End Function
+
+    Public Function IsCompletedOrActualizedOp(routingDt As DataTable,
+                                          opRec As Integer) As Boolean
+
+        If routingDt Is Nothing OrElse opRec <= 0 Then Return False
+
+        For Each r As DataRow In routingDt.Rows
+            If SafeInt(r("OrdersID")) = opRec Then
+                Return IsCompletedOrActualizedRow(r)
+            End If
+        Next
+
+        Return False
+
+    End Function
+
+    Public Function GetOperationReleaseTime(routingDt As DataTable,
+                                        opRec As Integer) As DateTime
+
+        If routingDt Is Nothing OrElse opRec <= 0 Then Return DateTime.MinValue
+
+        For Each r As DataRow In routingDt.Rows
+            If SafeInt(r("OrdersID")) = opRec Then
+                Return SafeDate(r("operation_release_time"))
+            End If
+        Next
+
+        Return DateTime.MinValue
+
+    End Function
     Public Sub PopulateWipColumns(dt As DataTable, planningboard As IPlanningBoard, terminatorTime As DateTime)
 
         If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
@@ -561,82 +1054,261 @@ Public Module SharedHelpers
 
     End Sub
 
+    'Private Sub PopulateOrderWipColumns(orderRows As List(Of DataRow),
+    '                                    terminatorTime As DateTime)
+
+    '    If orderRows.Count = 0 Then Return
+
+    '    ' A future operation is one with a strictly greater operation number.
+    '    ' Compute that state once per operation-number group.
+    '    Dim hasFutureScheduled(orderRows.Count - 1) As Boolean
+    '    Dim futureScheduled As Boolean = False
+    '    Dim groupEnd As Integer = orderRows.Count - 1
+
+    '    While groupEnd >= 0
+    '        Dim opNo As Integer = SafeInt(orderRows(groupEnd)("Operation Number"))
+    '        Dim groupStart As Integer = groupEnd
+
+    '        While groupStart > 0 AndAlso
+    '              SafeInt(orderRows(groupStart - 1)("Operation Number")) = opNo
+    '            groupStart -= 1
+    '        End While
+
+    '        For i As Integer = groupStart To groupEnd
+    '            hasFutureScheduled(i) = futureScheduled
+    '        Next
+
+    '        For i As Integer = groupStart To groupEnd
+    '            If SafeBool(orderRows(i)("is_scheduled")) Then
+    '                futureScheduled = True
+    '                Exit For
+    '            End If
+    '        Next
+
+    '        groupEnd = groupStart - 1
+    '    End While
+
+    '    Dim prevRow As DataRow = Nothing
+    '    Dim hasAnyPriorScheduled As Boolean = False
+    '    Dim lastPriorScheduledOpNo As Integer = 0
+    '    Dim groupStartForward As Integer = 0
+
+    '    While groupStartForward < orderRows.Count
+    '        Dim opNo As Integer =
+    '            SafeInt(orderRows(groupStartForward)("Operation Number"))
+    '        Dim groupEndForward As Integer = groupStartForward
+
+    '        While groupEndForward + 1 < orderRows.Count AndAlso
+    '              SafeInt(orderRows(groupEndForward + 1)("Operation Number")) = opNo
+    '            groupEndForward += 1
+    '        End While
+
+    '        For i As Integer = groupStartForward To groupEndForward
+    '            Dim wip As WipInfo =
+    '                CreateWipInfo(orderRows(i),
+    '                              prevRow,
+    '                              hasAnyPriorScheduled,
+    '                              lastPriorScheduledOpNo,
+    '                              hasFutureScheduled(i),
+    '                              terminatorTime,
+    '                              0,
+    '                              False)
+
+    '            WriteWipColumns(orderRows(i), wip)
+    '        Next
+
+    '        For i As Integer = groupStartForward To groupEndForward
+    '            If SafeBool(orderRows(i)("is_scheduled")) AndAlso
+    '               SafeDate(orderRows(i)("scheduled_end_time")) <> DateTime.MinValue Then
+
+    '                hasAnyPriorScheduled = True
+    '                lastPriorScheduledOpNo = opNo
+    '            End If
+    '        Next
+
+    '        ' Rows are sorted by operation number and record ID, so the final
+    '        ' row in this group matches the old previous-operation tie-break.
+    '        prevRow = orderRows(groupEndForward)
+    '        groupStartForward = groupEndForward + 1
+    '    End While
+
+    'End Sub
+
     Private Sub PopulateOrderWipColumns(orderRows As List(Of DataRow),
-                                        terminatorTime As DateTime)
+                                    terminatorTime As DateTime)
 
-        If orderRows.Count = 0 Then Return
+        If orderRows Is Nothing OrElse orderRows.Count = 0 Then Return
 
-        ' A future operation is one with a strictly greater operation number.
-        ' Compute that state once per operation-number group.
+        ' ------------------------------------------------------------
+        ' STEP 1:
+        ' Find the order progress boundary.
+        '
+        ' Business rule:
+        ' If op 240 = Y, then operations up to 240 are complete,
+        ' even if op 200 = N.
+        ' ------------------------------------------------------------
+        Dim boundaryOpNo As Integer = 0
+        Dim boundaryOpRec As Integer = 0
+        Dim boundaryReleaseTime As DateTime = DateTime.MinValue
+
+        For Each r As DataRow In orderRows
+
+            Dim opNo As Integer = SafeInt(r("Operation Number"))
+            If opNo <= 0 Then Continue For
+
+            If Not IsProgressMarker(r) Then Continue For
+
+            Dim releaseTime As DateTime =
+            ResolveProgressReleaseTime(r, terminatorTime)
+
+            If releaseTime = DateTime.MinValue Then
+                releaseTime = terminatorTime
+            End If
+
+            If opNo > boundaryOpNo OrElse
+           (opNo = boundaryOpNo AndAlso releaseTime > boundaryReleaseTime) Then
+
+                boundaryOpNo = opNo
+                boundaryOpRec = SafeInt(r("OrdersID"))
+                boundaryReleaseTime = releaseTime
+
+            End If
+
+        Next
+
+        ' ------------------------------------------------------------
+        ' STEP 2:
+        ' Write operation-level execution/release columns.
+        ' ------------------------------------------------------------
+        For Each r As DataRow In orderRows
+            WriteOperationProgressColumns(r,
+                                      boundaryOpNo,
+                                      boundaryOpRec,
+                                      boundaryReleaseTime,
+                                      terminatorTime)
+        Next
+
+        ' ------------------------------------------------------------
+        ' STEP 3:
+        ' Future block calculation.
+        ' Future means a later operation is already scheduled
+        ' OR completed/actualized by the progress boundary.
+        ' ------------------------------------------------------------
         Dim hasFutureScheduled(orderRows.Count - 1) As Boolean
-        Dim futureScheduled As Boolean = False
+        Dim futureBlocked As Boolean = False
+
         Dim groupEnd As Integer = orderRows.Count - 1
 
         While groupEnd >= 0
-            Dim opNo As Integer = SafeInt(orderRows(groupEnd)("Operation Number"))
+
+            Dim opNo As Integer =
+            SafeInt(orderRows(groupEnd)("Operation Number"))
+
             Dim groupStart As Integer = groupEnd
 
             While groupStart > 0 AndAlso
-                  SafeInt(orderRows(groupStart - 1)("Operation Number")) = opNo
+              SafeInt(orderRows(groupStart - 1)("Operation Number")) = opNo
                 groupStart -= 1
             End While
 
             For i As Integer = groupStart To groupEnd
-                hasFutureScheduled(i) = futureScheduled
+                hasFutureScheduled(i) = futureBlocked
             Next
 
             For i As Integer = groupStart To groupEnd
-                If SafeBool(orderRows(i)("is_scheduled")) Then
-                    futureScheduled = True
+                If SafeBool(orderRows(i)("is_scheduled")) OrElse
+               SafeBool(orderRows(i)("operation_effective_completed")) Then
+
+                    futureBlocked = True
                     Exit For
+
                 End If
             Next
 
             groupEnd = groupStart - 1
+
         End While
 
+        ' ------------------------------------------------------------
+        ' STEP 4:
+        ' Build WIP columns using released operations, not scheduled-only.
+        ' ------------------------------------------------------------
         Dim prevRow As DataRow = Nothing
-        Dim hasAnyPriorScheduled As Boolean = False
-        Dim lastPriorScheduledOpNo As Integer = 0
+
+        Dim hasAnyPriorReleased As Boolean = False
+        Dim lastPriorReleasedOpNo As Integer = 0
+        Dim lastPriorReleasedOpRec As Integer = 0
+
         Dim groupStartForward As Integer = 0
 
         While groupStartForward < orderRows.Count
+
             Dim opNo As Integer =
-                SafeInt(orderRows(groupStartForward)("Operation Number"))
+            SafeInt(orderRows(groupStartForward)("Operation Number"))
+
             Dim groupEndForward As Integer = groupStartForward
 
             While groupEndForward + 1 < orderRows.Count AndAlso
-                  SafeInt(orderRows(groupEndForward + 1)("Operation Number")) = opNo
+              SafeInt(orderRows(groupEndForward + 1)("Operation Number")) = opNo
                 groupEndForward += 1
             End While
 
             For i As Integer = groupStartForward To groupEndForward
+
                 Dim wip As WipInfo =
-                    CreateWipInfo(orderRows(i),
-                                  prevRow,
-                                  hasAnyPriorScheduled,
-                                  lastPriorScheduledOpNo,
-                                  hasFutureScheduled(i),
-                                  terminatorTime,
-                                  0,
-                                  False)
+                CreateWipInfo(orderRows(i),
+                              prevRow,
+                              hasAnyPriorReleased,
+                              lastPriorReleasedOpNo,
+                              hasFutureScheduled(i),
+                              terminatorTime,
+                              0,
+                              False,
+                              lastPriorReleasedOpRec)
 
                 WriteWipColumns(orderRows(i), wip)
+
             Next
+
+            ' After writing WIP for this group, decide whether this group
+            ' releases the next group.
+            Dim groupReleased As Boolean = False
+            Dim groupReleaseTime As DateTime = DateTime.MinValue
+            Dim groupReleaseRec As Integer = 0
 
             For i As Integer = groupStartForward To groupEndForward
-                If SafeBool(orderRows(i)("is_scheduled")) AndAlso
-                   SafeDate(orderRows(i)("scheduled_end_time")) <> DateTime.MinValue Then
 
-                    hasAnyPriorScheduled = True
-                    lastPriorScheduledOpNo = opNo
+                If SafeBool(orderRows(i)("operation_releases_next")) Then
+
+                    Dim releaseTime As DateTime =
+                    SafeDate(orderRows(i)("operation_release_time"))
+
+                    If releaseTime <> DateTime.MinValue Then
+
+                        groupReleased = True
+
+                        If releaseTime > groupReleaseTime Then
+                            groupReleaseTime = releaseTime
+                            groupReleaseRec = SafeInt(orderRows(i)("OrdersID"))
+                        End If
+
+                    End If
+
                 End If
+
             Next
 
-            ' Rows are sorted by operation number and record ID, so the final
-            ' row in this group matches the old previous-operation tie-break.
+            If groupReleased Then
+                hasAnyPriorReleased = True
+                lastPriorReleasedOpNo = opNo
+                lastPriorReleasedOpRec = groupReleaseRec
+            End If
+
+            ' Rows are sorted by operation number and record ID.
             prevRow = orderRows(groupEndForward)
+
             groupStartForward = groupEndForward + 1
+
         End While
 
     End Sub
@@ -777,7 +1449,164 @@ Public Module SharedHelpers
         Return defaultValue
 
     End Function
+    Public Class FiringReadinessInfo
+        Public Property OrderNo As String
+        Public Property ReadyTime As DateTime
+        Public Property LastReleaseOpNo As Integer
+        Public Property LastReleaseOpRec As Integer
+        Public Property LoadingAlreadyReleased As Boolean
+        Public Property WipScore As Integer
+    End Class
 
+    Public Function BuildFiringReadinessByOrder(dt As DataTable) _
+    As Dictionary(Of String, FiringReadinessInfo)
+
+        Dim result As New Dictionary(Of String, FiringReadinessInfo)(StringComparer.OrdinalIgnoreCase)
+
+        If dt Is Nothing OrElse dt.Rows.Count = 0 Then Return result
+
+        Dim rowsByOrder As New Dictionary(Of String, List(Of DataRow))(StringComparer.OrdinalIgnoreCase)
+
+        For Each r As DataRow In dt.Rows
+
+            Dim orderNo As String = SafeStr(r("Order No")).Trim()
+            If orderNo = "" Then Continue For
+
+            Dim rows As List(Of DataRow) = Nothing
+
+            If Not rowsByOrder.TryGetValue(orderNo, rows) Then
+                rows = New List(Of DataRow)()
+                rowsByOrder.Add(orderNo, rows)
+            End If
+
+            rows.Add(r)
+
+        Next
+
+        For Each kvp In rowsByOrder
+
+            Dim orderNo As String = kvp.Key
+            Dim rows As List(Of DataRow) = kvp.Value
+
+            rows.Sort(
+            Function(a As DataRow, b As DataRow) As Integer
+
+                Dim opCompare As Integer =
+                    SafeInt(a("Operation Number")).CompareTo(
+                        SafeInt(b("Operation Number")))
+
+                If opCompare <> 0 Then Return opCompare
+
+                Return SafeInt(a("OrdersID")).CompareTo(
+                    SafeInt(b("OrdersID")))
+
+            End Function)
+
+            ' --------------------------------------------------------
+            ' If loading op 290/291 is already released, use that
+            ' as firing readiness and do not add loading time again.
+            ' --------------------------------------------------------
+            Dim loadingReadyTime As DateTime = DateTime.MinValue
+            Dim loadingReadyOpNo As Integer = 0
+            Dim loadingReadyOpRec As Integer = 0
+
+            For Each r As DataRow In rows
+
+                Dim opNo As Integer = SafeInt(r("Operation Number"))
+
+                If opNo <> 290 AndAlso opNo <> 291 Then Continue For
+
+                If Not SafeBool(r("operation_releases_next")) Then Continue For
+
+                Dim releaseTime As DateTime =
+                SafeDate(r("operation_release_time"))
+
+                If releaseTime = DateTime.MinValue Then Continue For
+
+                If releaseTime > loadingReadyTime Then
+                    loadingReadyTime = releaseTime
+                    loadingReadyOpNo = opNo
+                    loadingReadyOpRec = SafeInt(r("OrdersID"))
+                End If
+
+            Next
+
+            If loadingReadyTime <> DateTime.MinValue Then
+
+                result(orderNo) = New FiringReadinessInfo With {
+                .OrderNo = orderNo,
+                .ReadyTime = loadingReadyTime,
+                .LastReleaseOpNo = loadingReadyOpNo,
+                .LastReleaseOpRec = loadingReadyOpRec,
+                .LoadingAlreadyReleased = True,
+                .WipScore = 1000 + loadingReadyOpNo
+            }
+
+                Continue For
+
+            End If
+
+            ' --------------------------------------------------------
+            ' Normal case:
+            ' Firing readiness comes from the last released operation
+            ' before loading 290.
+            ' --------------------------------------------------------
+            Dim lastPre290OpNo As Integer = 0
+            Dim lastPre290ReadyTime As DateTime = DateTime.MinValue
+            Dim lastPre290OpRec As Integer = 0
+
+            For Each r As DataRow In rows
+
+                Dim opNo As Integer = SafeInt(r("Operation Number"))
+
+                If opNo <= 0 OrElse opNo >= 290 Then Continue For
+
+                ' This helper requires the last operation before 290
+                ' to be released. If a later pre-290 operation is pending,
+                ' firing will not be released yet.
+                If opNo > lastPre290OpNo Then
+                    lastPre290OpNo = opNo
+                    lastPre290ReadyTime = DateTime.MinValue
+                    lastPre290OpRec = SafeInt(r("OrdersID"))
+                End If
+
+                If opNo = lastPre290OpNo AndAlso
+               SafeBool(r("operation_releases_next")) Then
+
+                    Dim releaseTime As DateTime =
+                    SafeDate(r("operation_release_time"))
+
+                    If releaseTime <> DateTime.MinValue AndAlso
+                   releaseTime > lastPre290ReadyTime Then
+
+                        lastPre290ReadyTime = releaseTime
+                        lastPre290OpRec = SafeInt(r("OrdersID"))
+
+                    End If
+
+                End If
+
+            Next
+
+            If lastPre290OpNo > 0 AndAlso
+           lastPre290ReadyTime <> DateTime.MinValue Then
+
+                result(orderNo) = New FiringReadinessInfo With {
+                .OrderNo = orderNo,
+                .ReadyTime = lastPre290ReadyTime,
+                .LastReleaseOpNo = lastPre290OpNo,
+                .LastReleaseOpRec = lastPre290OpRec,
+                .LoadingAlreadyReleased = False,
+                .WipScore = 1000 + lastPre290OpNo
+            }
+
+            End If
+
+        Next
+
+        Return result
+
+    End Function
     Public Function BuildMetadataAvailabilityByResource(preactor As IPreactor,
                                                     resourceNames As IEnumerable(Of String)) As Dictionary(Of String, DateTime)
 

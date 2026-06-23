@@ -183,42 +183,44 @@ Public Class swkOptimizer_vf
 
         Dim list As New List(Of SwkCandidate)()
 
-        Dim lastPreOpNoByOrder As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+        'Dim lastPreOpNoByOrder As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
 
-        For Each r As DataRow In dt.Rows
-            Dim orderNo As String = SharedHelpers.SafeStr(r(COL_ORDERNO)).Trim()
-            If orderNo = "" Then Continue For
+        'For Each r As DataRow In dt.Rows
+        '    Dim orderNo As String = SharedHelpers.SafeStr(r(COL_ORDERNO)).Trim()
+        '    If orderNo = "" Then Continue For
 
-            Dim opNo As Integer = SharedHelpers.SafeInt(r(COL_OPNO))
-            If opNo <= 0 OrElse opNo >= 290 Then Continue For
+        '    Dim opNo As Integer = SharedHelpers.SafeInt(r(COL_OPNO))
+        '    If opNo <= 0 OrElse opNo >= 290 Then Continue For
 
-            Dim current As Integer = 0
-            If Not lastPreOpNoByOrder.TryGetValue(orderNo, current) OrElse opNo > current Then
-                lastPreOpNoByOrder(orderNo) = opNo
-            End If
-        Next
+        '    Dim current As Integer = 0
+        '    If Not lastPreOpNoByOrder.TryGetValue(orderNo, current) OrElse opNo > current Then
+        '        lastPreOpNoByOrder(orderNo) = opNo
+        '    End If
+        'Next
 
-        Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+        'Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
 
-        For Each r As DataRow In dt.Rows
-            Dim orderNo As String = SharedHelpers.SafeStr(r(COL_ORDERNO)).Trim()
-            If orderNo = "" Then Continue For
+        'For Each r As DataRow In dt.Rows
+        '    Dim orderNo As String = SharedHelpers.SafeStr(r(COL_ORDERNO)).Trim()
+        '    If orderNo = "" Then Continue For
 
-            Dim lastOpNo As Integer = 0
-            If Not lastPreOpNoByOrder.TryGetValue(orderNo, lastOpNo) Then Continue For
+        '    Dim lastOpNo As Integer = 0
+        '    If Not lastPreOpNoByOrder.TryGetValue(orderNo, lastOpNo) Then Continue For
 
-            Dim opNo As Integer = SharedHelpers.SafeInt(r(COL_OPNO))
-            If opNo <> lastOpNo Then Continue For
+        '    Dim opNo As Integer = SharedHelpers.SafeInt(r(COL_OPNO))
+        '    If opNo <> lastOpNo Then Continue For
 
-            If Not SharedHelpers.SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
+        '    If Not SharedHelpers.SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
 
-            Dim endT As DateTime = SharedHelpers.SafeDate(r(COL_SCHED_END))
-            If endT = DateTime.MinValue Then Continue For
+        '    Dim endT As DateTime = SharedHelpers.SafeDate(r(COL_SCHED_END))
+        '    If endT = DateTime.MinValue Then Continue For
 
-            If Not readyByOrder.ContainsKey(orderNo) OrElse endT > readyByOrder(orderNo) Then
-                readyByOrder(orderNo) = endT
-            End If
-        Next
+        '    If Not readyByOrder.ContainsKey(orderNo) OrElse endT > readyByOrder(orderNo) Then
+        '        readyByOrder(orderNo) = endT
+        '    End If
+        'Next
+        Dim readinessByOrder As Dictionary(Of String, SharedHelpers.FiringReadinessInfo) =
+    SharedHelpers.BuildFiringReadinessByOrder(dt)
 
         Dim loadingMinsByOrder As Dictionary(Of String, Integer) = BuildLoadingMinsByOrder(dt)
         Dim hasPrevCol As Boolean = dt.Columns.Contains(COL_PREVOP_IS_SCH)
@@ -245,8 +247,14 @@ Public Class swkOptimizer_vf
             Dim orderNo As String = SharedHelpers.SafeStr(r(COL_ORDERNO)).Trim()
             If orderNo = "" Then Continue For
 
-            Dim ready As DateTime
-            If Not readyByOrder.TryGetValue(orderNo, ready) Then Continue For
+            'Dim ready As DateTime
+            'If Not readyByOrder.TryGetValue(orderNo, ready) Then Continue For
+            Dim readiness As SharedHelpers.FiringReadinessInfo = Nothing
+
+            If Not readinessByOrder.TryGetValue(orderNo, readiness) Then Continue For
+
+            Dim ready As DateTime = readiness.ReadyTime
+            wipScore = Math.Max(wipScore, readiness.WipScore)
 
             Dim due As DateTime = SharedHelpers.ParseDueAsEndOfDay(r(COL_FIRING_DUE))
             If due = DateTime.MinValue Then Continue For
@@ -260,6 +268,10 @@ Public Class swkOptimizer_vf
 
             Dim loadMins As Integer = 0
             If Not loadingMinsByOrder.TryGetValue(orderNo, loadMins) Then
+                loadMins = 0
+            End If
+
+            If readiness.LoadingAlreadyReleased Then
                 loadMins = 0
             End If
 

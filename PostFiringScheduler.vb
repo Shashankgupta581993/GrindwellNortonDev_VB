@@ -38,6 +38,9 @@ Public Class PostFiringScheduler
         RequireColumn(routingDt, "wip_score")
         RequireColumn(routingDt, "wip_status")
         RequireColumn(routingDt, "wip_reject_reason")
+        RequireColumn(routingDt, "operation_releases_next")
+        RequireColumn(routingDt, "operation_release_time")
+        RequireColumn(routingDt, "operation_effective_completed")
 
         Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
         Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
@@ -57,21 +60,47 @@ Public Class PostFiringScheduler
         For Each r As DataRow In routingDt.Rows
 
             If Not IsKilnAckRow(routingDt, r, kilnAckName) Then Continue For
-            If Not SafeBool(r("is_scheduled")) Then Continue For
+            'If Not SafeBool(r("is_scheduled")) Then Continue For
+
+            'Dim kilnAckOpRec As Integer = SafeInt(r("OrdersID"))
+            'If kilnAckOpRec <= 0 Then Continue For
+
+            'Dim kilnAckEnd As DateTime = SafeDate(r("scheduled_end_time"))
+            'If kilnAckEnd = DateTime.MinValue Then Continue For
+            If Not SafeBool(r("operation_releases_next")) Then Continue For
 
             Dim kilnAckOpRec As Integer = SafeInt(r("OrdersID"))
             If kilnAckOpRec <= 0 Then Continue For
 
-            Dim kilnAckEnd As DateTime = SafeDate(r("scheduled_end_time"))
+            Dim kilnAckEnd As DateTime = SafeDate(r("operation_release_time"))
             If kilnAckEnd = DateTime.MinValue Then Continue For
 
             ' First unscheduled operation after KILNACK
             Dim nextOpRec As Integer = planningboard.GetNextOperation(kilnAckOpRec, 1)
 
-            While nextOpRec > 0 AndAlso planningboard.IsOperationScheduled(nextOpRec)
-                nextOpRec = planningboard.GetNextOperation(nextOpRec, 1)
-            End While
+            'While nextOpRec > 0 AndAlso planningboard.IsOperationScheduled(nextOpRec)
+            '    nextOpRec = planningboard.GetNextOperation(nextOpRec, 1)
+            'End While
+            While nextOpRec > 0
 
+                If planningboard.IsOperationScheduled(nextOpRec) Then
+                    nextOpRec = planningboard.GetNextOperation(nextOpRec, 1)
+                    Continue While
+                End If
+
+                Dim tempRow As DataRow = Nothing
+
+                If rowByOpRec.TryGetValue(nextOpRec, tempRow) AndAlso
+       SharedHelpers.IsCompletedOrActualizedRow(tempRow) Then
+
+                    nextOpRec = planningboard.GetNextOperation(nextOpRec, 1)
+                    Continue While
+
+                End If
+
+                Exit While
+
+            End While
             If nextOpRec <= 0 Then Continue For
 
             Dim nextOpNo As Integer

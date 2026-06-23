@@ -210,26 +210,29 @@ Public Class tunnelOptimizer_vf
     Private Function BuildCandidates(dt As DataTable, dryingToFiringBufferHours As Double) As List(Of TunnelCandidate)
 
         ' readiness per order = max scheduled_end_time among scheduled ops with opNo < 290
-        Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+        'Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
 
-        For Each r As DataRow In dt.Rows
-            If Not SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
+        'For Each r As DataRow In dt.Rows
+        '    If Not SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
 
-            ' Area that I did not add the code for WIP. 
+        '    ' Area that I did not add the code for WIP. 
 
-            Dim opNo As Integer = SafeInt(r(COL_OPNO))
-            If opNo >= 290 Then Continue For
+        '    Dim opNo As Integer = SafeInt(r(COL_OPNO))
+        '    If opNo >= 290 Then Continue For
 
-            Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
-            If orderNo = "" Then Continue For
+        '    Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
+        '    If orderNo = "" Then Continue For
 
-            Dim endT As DateTime = SafeDate(r(COL_SCHED_END))
-            If endT = DateTime.MinValue Then Continue For
+        '    Dim endT As DateTime = SafeDate(r(COL_SCHED_END))
+        '    If endT = DateTime.MinValue Then Continue For
 
-            If (Not readyByOrder.ContainsKey(orderNo)) OrElse endT > readyByOrder(orderNo) Then
-                readyByOrder(orderNo) = endT
-            End If
-        Next
+        '    If (Not readyByOrder.ContainsKey(orderNo)) OrElse endT > readyByOrder(orderNo) Then
+        '        readyByOrder(orderNo) = endT
+        '    End If
+        'Next
+        Dim readinessByOrder As Dictionary(Of String, SharedHelpers.FiringReadinessInfo) =
+    SharedHelpers.BuildFiringReadinessByOrder(dt)
+
 
         ' Build candidates from op 300 rows (unscheduled) for tunnel kiln type = 2
         Dim list As New List(Of TunnelCandidate)()
@@ -255,7 +258,10 @@ Public Class tunnelOptimizer_vf
             If orderNo = "" Then Continue For
 
             ' Rule 3: ensure prior ops (<290) are scheduled -> must have readiness
-            If Not readyByOrder.ContainsKey(orderNo) Then Continue For
+            'If Not readyByOrder.ContainsKey(orderNo) Then Continue For
+            Dim readiness As SharedHelpers.FiringReadinessInfo = Nothing
+
+            If Not readinessByOrder.TryGetValue(orderNo, readiness) Then Continue For
 
             Dim firingOpRec As Integer = SafeInt(r(COL_OPREC))
             If firingOpRec <= 0 Then Continue For
@@ -266,8 +272,14 @@ Public Class tunnelOptimizer_vf
             Dim due As DateTime = ParseDueAsEndOfDay(r(COL_FIRING_DUE))
             If due = DateTime.MinValue Then Continue For
 
-            Dim ready As DateTime = readyByOrder(orderNo).AddHours(dryingToFiringBufferHours)
+            'Dim ready As DateTime = readyByOrder(orderNo).AddHours(dryingToFiringBufferHours)
+            Dim ready As DateTime = readiness.ReadyTime
 
+            If Not readiness.LoadingAlreadyReleased Then
+                ready = ready.AddHours(dryingToFiringBufferHours)
+            End If
+
+            wipScore = Math.Max(wipScore, readiness.WipScore)
             list.Add(New TunnelCandidate With {
                 .OrderNo = orderNo,
                 .FiringOpRec = firingOpRec,

@@ -335,54 +335,55 @@ Public Class firingOptimizer_vf
         ' STEP 1: For each order, find the last operation number BEFORE 290
         '         (this is the "valid pre-firing op" for that order)
         ' -----------------------------------------------------------------
-        Dim lastPreOpNoByOrder As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+        'Dim lastPreOpNoByOrder As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
 
-        For Each r As DataRow In dt.Rows
-            Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
-            If orderNo = "" Then Continue For
+        'For Each r As DataRow In dt.Rows
+        '    Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
+        '    If orderNo = "" Then Continue For
 
-            Dim opNo As Integer = SafeInt(r(COL_OPNO))
-            ' Last pre-firing op is the maximum opNo where 0 < opNo < 290
-            If opNo <= 0 OrElse opNo >= 290 Then Continue For
+        '    Dim opNo As Integer = SafeInt(r(COL_OPNO))
+        '    ' Last pre-firing op is the maximum opNo where 0 < opNo < 290
+        '    If opNo <= 0 OrElse opNo >= 290 Then Continue For
 
-            Dim current As Integer
-            If Not lastPreOpNoByOrder.TryGetValue(orderNo, current) OrElse opNo > current Then
-                lastPreOpNoByOrder(orderNo) = opNo
-            End If
-        Next
+        '    Dim current As Integer
+        '    If Not lastPreOpNoByOrder.TryGetValue(orderNo, current) OrElse opNo > current Then
+        '        lastPreOpNoByOrder(orderNo) = opNo
+        '    End If
+        'Next
 
-        ' -----------------------------------------------------------------
-        ' STEP 2: For each order, get scheduled_end_time of that last pre-290 op
-        '         Only if that specific op is scheduled do we treat the order
-        '         as having a valid ReadyTime for firing.
-        ' -----------------------------------------------------------------
-        Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+        '' -----------------------------------------------------------------
+        '' STEP 2: For each order, get scheduled_end_time of that last pre-290 op
+        ''         Only if that specific op is scheduled do we treat the order
+        ''         as having a valid ReadyTime for firing.
+        '' -----------------------------------------------------------------
+        'Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
 
-        For Each r As DataRow In dt.Rows
-            Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
-            If orderNo = "" Then Continue For
+        'For Each r As DataRow In dt.Rows
+        '    Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
+        '    If orderNo = "" Then Continue For
 
-            Dim lastOpNo As Integer
-            If Not lastPreOpNoByOrder.TryGetValue(orderNo, lastOpNo) Then Continue For
+        '    Dim lastOpNo As Integer
+        '    If Not lastPreOpNoByOrder.TryGetValue(orderNo, lastOpNo) Then Continue For
 
-            Dim opNo As Integer = SafeInt(r(COL_OPNO))
-            If opNo <> lastOpNo Then Continue For
+        '    Dim opNo As Integer = SafeInt(r(COL_OPNO))
+        '    If opNo <> lastOpNo Then Continue For
 
-            ' This is the "last pre-firing" op row for this order – it must be scheduled
-            If Not SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
+        '    ' This is the "last pre-firing" op row for this order – it must be scheduled
+        '    If Not SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
 
-            Dim endT As DateTime = SafeDate(r(COL_SCHED_END))
-            If endT = DateTime.MinValue Then Continue For
+        '    Dim endT As DateTime = SafeDate(r(COL_SCHED_END))
+        '    If endT = DateTime.MinValue Then Continue For
 
-            ' One per order; if somehow multiple, keep the latest
-            Dim existing As DateTime = DateTime.MinValue
-            If readyByOrder.TryGetValue(orderNo, existing) Then
-                If endT > existing Then readyByOrder(orderNo) = endT
-            Else
-                readyByOrder(orderNo) = endT
-            End If
-        Next
-
+        '    ' One per order; if somehow multiple, keep the latest
+        '    Dim existing As DateTime = DateTime.MinValue
+        '    If readyByOrder.TryGetValue(orderNo, existing) Then
+        '        If endT > existing Then readyByOrder(orderNo) = endT
+        '    Else
+        '        readyByOrder(orderNo) = endT
+        '    End If
+        'Next
+        Dim readinessByOrder As Dictionary(Of String, SharedHelpers.FiringReadinessInfo) =
+    SharedHelpers.BuildFiringReadinessByOrder(dt)
         ' -----------------------------------------------------------------
         ' STEP 3: Build firing candidates (op 300 on batch kilns) using
         '         last pre-290 op completion as ReadyTime.
@@ -413,11 +414,20 @@ Public Class firingOptimizer_vf
             If orderNo = "" Then Continue For
 
             ' Require last pre-firing op to be scheduled → ReadyTime defined
-            Dim ready As DateTime
-            If Not readyByOrder.TryGetValue(orderNo, ready) Then
-                ' Sequence is incomplete – last pre-290 op not scheduled
+            'Dim ready As DateTime
+            'If Not readyByOrder.TryGetValue(orderNo, ready) Then
+            '    ' Sequence is incomplete – last pre-290 op not scheduled
+            '    Continue For
+            'End If
+
+            Dim readiness As SharedHelpers.FiringReadinessInfo = Nothing
+
+            If Not readinessByOrder.TryGetValue(orderNo, readiness) Then
                 Continue For
             End If
+
+            Dim ready As DateTime = readiness.ReadyTime
+            wipScore = Math.Max(wipScore, readiness.WipScore)
 
             Dim cycle As String = SafeStr(r(COL_CYCLE)).Trim()
             If Not IsKnownCycle(cycle) Then Continue For
@@ -434,6 +444,12 @@ Public Class firingOptimizer_vf
             Dim loadMins As Integer = 0
             If Not loadingMinsByOrder.TryGetValue(orderNo, loadMins) Then
                 Continue For
+            End If
+
+            ' If loading 290/291 is already completed/released,
+            ' do not add loading time again.
+            If readiness.LoadingAlreadyReleased Then
+                loadMins = 0
             End If
             'Dim loadMins As Integer = FindMaxLoadingMins(dt, orderNo)
             'If loadMins < 0 Then Continue For
