@@ -76,7 +76,8 @@ Public Class firingOptimizer_vf
                                            Optional allowUnderfilledTail As Boolean = True,
                                            Optional batchStartDelayMins As Integer = 0,
                                            Optional maxBatchesPerDayGlobal As Integer = 2,
-                                           Optional initialKilnAvailability As Dictionary(Of String, DateTime) = Nothing) As FiringBatchPlan
+                                           Optional initialKilnAvailability As Dictionary(Of String, DateTime) = Nothing,
+                                           Optional debug As SchedulerDebugCollector = Nothing) As FiringBatchPlan
 
 
         ValidateInputs(dt, minOcc, maxOcc)
@@ -89,6 +90,23 @@ Public Class firingOptimizer_vf
 
         ' Build candidates per order (Batch-only + op300 exists + readiness computed from <290)
         Dim candidates As List(Of OrderCandidate) = BuildCandidates(dt)
+        If debug IsNot Nothing AndAlso debug.Enabled Then
+            Dim candidateIds As New HashSet(Of Integer)(candidates.Select(Function(x) x.FiringOpRec))
+            Dim beforeCount As Integer = dt.AsEnumerable().Count(Function(r) SafeInt(r(COL_OPNO)) = 300 AndAlso SafeInt(r(COL_KILNTYPE)) = 1)
+            For Each r As DataRow In dt.Rows
+                If SafeInt(r(COL_OPNO)) <> 300 OrElse SafeInt(r(COL_KILNTYPE)) <> 1 Then Continue For
+                Dim recNo As Integer = SafeInt(r(COL_OPREC))
+                Dim included As Boolean = candidateIds.Contains(recNo)
+                debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+                    .OptimizerName = "firingOptimizer_vf", .Stage = "BatchFiring", .StepName = "FinalCandidateSet",
+                    .OrderNo = SafeStr(r(COL_ORDERNO)).Trim(), .ParentRecordNo = SafeInt(r("parent_record")),
+                    .RecordNo = recNo, .OperationNumber = 300, .BeforeCount = beforeCount, .AfterCount = candidates.Count,
+                    .Included = included,
+                    .ReasonCode = If(included, SchedulerDebugReasonCodes.OK_INCLUDED, SchedulerDebugReasonCodes.FIRING_NO_VALID_BATCH_COMBINATION),
+                    .ReasonDetail = If(included, "Included after batch firing filters.", "Excluded by one or more batch firing candidate filters.")
+                })
+            Next
+        End If
 
         ' Initialize kiln availability
         'Dim kilnAvail As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)

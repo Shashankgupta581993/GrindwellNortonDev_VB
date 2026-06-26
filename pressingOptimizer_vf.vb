@@ -15,6 +15,9 @@
 
     ' Candidate structure used for sorting/batching
     Private Class Candidate
+        Public Property RecordNo As Integer
+        Public Property OrderNo As String
+        Public Property OperationNumber As Integer
         Public Property ParentRecord As Integer          ' queue key to return
         Public Property ResourceGroup As String          ' resource group key
         Public Property Earliest As DateTime             ' Pressing earliest start (date-only)
@@ -41,7 +44,8 @@
     Public Function BuildPressing200Queue(dt As DataTable,
                                       currentDate As DateTime,
                                       Optional approachingDays As Integer = 2,
-                                          Optional prioritizePrevOpFirst As Boolean = False) As List(Of Integer)
+                                          Optional prioritizePrevOpFirst As Boolean = False,
+                                          Optional debug As SchedulerDebugCollector = Nothing) As List(Of Integer)
 
         If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
 
@@ -55,7 +59,6 @@
         SharedHelpers.RequireColumn(dt, "wip_status")
         SharedHelpers.RequireColumn(dt, "wip_reject_reason")
         SharedHelpers.RequireColumn(dt, "Resource Group")
-
         SharedHelpers.RequireColumn(dt, "Operation Number")
         SharedHelpers.RequireColumn(dt, "Pressing earliest start")
         SharedHelpers.RequireColumn(dt, "Pressing Due date")
@@ -133,6 +136,9 @@
             ' 1 = “prev op not scheduled / unknown” → slightly worse
 
             candidates.Add(New Candidate With {
+            .RecordNo = SharedHelpers.SafeInt(r("OrdersID")),
+            .OrderNo = SharedHelpers.SafeStr(r("Order No")).Trim(),
+            .OperationNumber = opNo,
             .ParentRecord = parentRec,
             .ResourceGroup = resourceGroup,
             .Earliest = earliest,
@@ -208,6 +214,29 @@
 
         ' ---- Greedy batching: TypeKey clustering at RESOURCE GROUP level ----
         Dim batched As List(Of Candidate) = GreedyTypeBatchingWithinTier(sorted, lookahead:=50)
+
+        If debug IsNot Nothing AndAlso debug.Enabled Then
+            Dim beforeCount As Integer = dt.AsEnumerable().Count(Function(r) SharedHelpers.SafeInt(r("Operation Number")) = 200)
+            For i As Integer = 0 To batched.Count - 1
+                Dim c As Candidate = batched(i)
+                debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+                    .OptimizerName = "pressingOptimizer_vf",
+                    .Stage = "Pressing",
+                    .StepName = "FinalRankedQueue",
+                    .OrderNo = c.OrderNo,
+                    .ParentRecordNo = c.ParentRecord,
+                    .RecordNo = c.RecordNo,
+                    .OperationNumber = c.OperationNumber,
+                    .BeforeCount = beforeCount,
+                    .AfterCount = batched.Count,
+                    .Included = True,
+                    .ReasonCode = SchedulerDebugReasonCodes.OK_INCLUDED,
+                    .ReasonDetail = "Included in final pressing parent queue.",
+                    .RankScore = c.WipScore,
+                    .RankBreakdown = "Tier=" & c.Tier.ToString() & ";CycleRank=" & c.CycleRank.ToString() & ";Type=" & c.TypeKey
+                })
+            Next
+        End If
 
         ' ---- Output: return parent_record list (distinct to be safe) ----
         Return batched.Select(Function(c) c.ParentRecord).Distinct().ToList()

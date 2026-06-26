@@ -82,11 +82,29 @@ Public Class swkOptimizer_vf
                                  Optional dailyBatchLimit As Integer = 2,
                                  Optional batchStartDelayMins As Integer = 60,
                                  Optional allowUnderfilledTail As Boolean = True,
-                                 Optional swkResourceName As String = "SWBKILN") As SwkBatchPlan
+                                 Optional swkResourceName As String = "SWBKILN",
+                                 Optional debug As SchedulerDebugCollector = Nothing) As SwkBatchPlan
 
         ValidateInputs(dt, minTonnage, maxTonnage)
 
         Dim candidates As List(Of SwkCandidate) = BuildCandidates(dt, maxTonnage)
+        If debug IsNot Nothing AndAlso debug.Enabled Then
+            Dim candidateIds As New HashSet(Of Integer)(candidates.Select(Function(x) x.FiringOpRec))
+            Dim beforeCount As Integer = dt.AsEnumerable().Count(Function(r) SharedHelpers.SafeInt(r(COL_OPNO)) = 300 AndAlso SharedHelpers.SafeInt(r(COL_KILNTYPE)) = SWK_KILN_TYPE)
+            For Each r As DataRow In dt.Rows
+                If SharedHelpers.SafeInt(r(COL_OPNO)) <> 300 OrElse SharedHelpers.SafeInt(r(COL_KILNTYPE)) <> SWK_KILN_TYPE Then Continue For
+                Dim recNo As Integer = SharedHelpers.SafeInt(r(COL_OPREC))
+                Dim included As Boolean = candidateIds.Contains(recNo)
+                debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+                    .OptimizerName = "swkOptimizer_vf", .Stage = "SWK", .StepName = "FinalCandidateSet",
+                    .OrderNo = SharedHelpers.SafeStr(r(COL_ORDERNO)).Trim(),
+                    .ParentRecordNo = SharedHelpers.SafeInt(r(COL_PARENT)), .RecordNo = recNo, .OperationNumber = 300,
+                    .BeforeCount = beforeCount, .AfterCount = candidates.Count, .Included = included,
+                    .ReasonCode = If(included, SchedulerDebugReasonCodes.OK_INCLUDED, SchedulerDebugReasonCodes.SWK_CANDIDATE_NOT_HANDLED),
+                    .ReasonDetail = If(included, "Included after SWK filters.", "Excluded by one or more SWK candidate filters.")
+                })
+            Next
+        End If
 
         Dim plan As New SwkBatchPlan()
         If candidates.Count = 0 Then Return plan

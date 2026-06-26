@@ -93,6 +93,14 @@
     </Compile>
     <Compile Include="DBConnection.vb" />
     <Compile Include="DbSession.vb" />
+    <Compile Include="Debugging\SchedulerDebugReasonCodes.vb" />
+    <Compile Include="Debugging\SchedulerDebugModels.vb" />
+    <Compile Include="Debugging\SchedulerDebugFieldCache.vb" />
+    <Compile Include="Debugging\SchedulerDebugCollector.vb" />
+    <Compile Include="Debugging\SchedulerDebugExporter.vb" />
+    <Compile Include="Debugging\SchedulerStageDiagnostics.vb" />
+    <Compile Include="Debugging\SchedulerGptProblemStatementBuilder.vb" />
+    <Compile Include="Debugging\SchedulerDiagnosticsTool.vb" />
     <Compile Include="EventSeq.vb" />
     <Compile Include="firingOptimizer_vf.vb" />
     <Compile Include="Helper.vb" />

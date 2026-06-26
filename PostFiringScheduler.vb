@@ -26,7 +26,8 @@ Public Class PostFiringScheduler
     Public Function BuildQueue(preactor As IPreactor,
                                planningboard As IPlanningBoard,
                                routingDt As DataTable,
-                               Optional kilnAckName As String = "KILNACK") As List(Of QueueItem)
+                               Optional kilnAckName As String = "KILNACK",
+                               Optional debug As SchedulerDebugCollector = Nothing) As List(Of QueueItem)
 
         If routingDt Is Nothing Then Throw New ArgumentNullException(NameOf(routingDt))
 
@@ -137,7 +138,7 @@ Public Class PostFiringScheduler
         Next
 
         ' FIFO: oven exit first. Due date breaks conflict.
-        Return queue _
+        Dim ranked As List(Of QueueItem) = queue _
                 .OrderByDescending(Function(x) x.WipScore) _
                 .ThenBy(Function(x) x.KilnAckEndTime) _
                 .ThenBy(Function(x) x.DueDate) _
@@ -145,12 +146,26 @@ Public Class PostFiringScheduler
                 .ThenBy(Function(x) x.ParentRecord) _
                 .ThenBy(Function(x) x.NextOpNo) _
                 .ToList()
+        If debug IsNot Nothing AndAlso debug.Enabled Then
+            For i As Integer = 0 To ranked.Count - 1
+                Dim item As QueueItem = ranked(i)
+                debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+                    .OptimizerName = "PostFiringScheduler", .Stage = "PostFiring", .StepName = "FinalRankedQueue",
+                    .OrderNo = item.OrderNo, .ParentRecordNo = item.ParentRecord, .RecordNo = item.NextOpRec,
+                    .OperationNumber = item.NextOpNo, .BeforeCount = routingDt.Rows.Count, .AfterCount = ranked.Count,
+                    .Included = True, .ReasonCode = SchedulerDebugReasonCodes.OK_INCLUDED,
+                    .ReasonDetail = "Included in post-firing queue.", .RankScore = item.WipScore
+                })
+            Next
+        End If
+        Return ranked
 
     End Function
 
     Public Function ScheduleQueue(preactor As IPreactor,
                                   planningboard As IPlanningBoard,
-                                  queue As List(Of QueueItem)) As Integer
+                                  queue As List(Of QueueItem),
+                                  Optional debug As SchedulerDebugCollector = Nothing) As Integer
 
         If queue Is Nothing OrElse queue.Count = 0 Then Return 0
 
@@ -200,9 +215,16 @@ Public Class PostFiringScheduler
                     If bestTimes.HasValue AndAlso bestResRec > 0 Then
                         ' Recheck immediately before changing the live board.
                         If Not planningboard.IsOperationScheduled(opRec) Then
-                            planningboard.PutOperationOnResource(opRec,
+                            Dim trace As ScheduleAttemptTraceRow = CreateAttempt(debug, item, opRec, liveOpNo, bestResRec, bestTimes.Value.ChangeStart)
+                            Try
+                                planningboard.PutOperationOnResource(opRec,
                                                                  bestResRec,
                                                                  bestTimes.Value.ChangeStart)
+                                CompleteAttempt(planningboard, trace, opRec, True, Nothing)
+                            Catch ex As Exception
+                                CompleteAttempt(planningboard, trace, opRec, False, ex)
+                                Throw
+                            End Try
                             scheduledCount += 1
                         End If
 
@@ -210,7 +232,7 @@ Public Class PostFiringScheduler
                                                    opRec,
                                                    bestTimes.Value.ProcessEnd)
                     Else
-                        Debug.WriteLine("PostFiring: no feasible resource. Order=" &
+                        System.Diagnostics.Debug.WriteLine("PostFiring: no feasible resource. Order=" &
                                         item.OrderNo &
                                         ", OpRec=" & opRec &
                                         ", OpNo=" & liveOpNo)
@@ -220,7 +242,7 @@ Public Class PostFiringScheduler
                 End While
 
             Catch ex As Exception
-                Debug.WriteLine("PostFiring failed. Order=" &
+                System.Diagnostics.Debug.WriteLine("PostFiring failed. Order=" &
                                 item.OrderNo &
                                 ", OpRec=" & item.NextOpRec &
                                 ", Error=" & ex.Message)
@@ -231,6 +253,40 @@ Public Class PostFiringScheduler
         Return scheduledCount
 
     End Function
+
+    Private Function CreateAttempt(debug As SchedulerDebugCollector, item As QueueItem, opRec As Integer,
+                                   opNo As Integer, resourceRec As Integer, startTime As DateTime) As ScheduleAttemptTraceRow
+        If debug Is Nothing OrElse Not debug.Enabled Then Return Nothing
+        Dim row As New ScheduleAttemptTraceRow With {
+            .Stage = "PostFiring", .OrderNo = item.OrderNo, .ParentRecordNo = item.ParentRecord,
+            .RecordNo = opRec, .OperationNumber = opNo, .RequestedResource = resourceRec.ToString(),
+            .RequestedStartTime = startTime, .SchedulingDirection = "Forward", .WasAttempted = True
+        }
+        debug.TraceScheduleAttempt(row)
+        Return row
+    End Function
+
+    Private Sub CompleteAttempt(planningboard As IPlanningBoard, row As ScheduleAttemptTraceRow,
+                                opRec As Integer, expectedSuccess As Boolean, ex As Exception)
+        If row Is Nothing Then Return
+        If ex IsNot Nothing Then
+            row.ExceptionType = ex.GetType().FullName
+            row.ExceptionMessage = ex.Message
+            row.FailureReasonCode = SchedulerDebugReasonCodes.SCHEDULE_EXCEPTION_THROWN
+            row.FailureReasonDetail = ex.Message
+            Return
+        End If
+        row.ScheduledAfterAttempt = planningboard.IsOperationScheduled(opRec)
+        row.PlanningBoardResultCode = If(row.ScheduledAfterAttempt, 0, -1)
+        row.PlanningBoardResultMeaning = If(row.ScheduledAfterAttempt, "Scheduled", "Operation remained unscheduled")
+        row.FailureReasonCode = If(row.ScheduledAfterAttempt, SchedulerDebugReasonCodes.OK_SCHEDULED,
+                                   SchedulerDebugReasonCodes.SCHEDULE_RESULT_NOT_SCHEDULED)
+        Dim times As Nullable(Of OperationResourceTimes) = planningboard.GetOperationTimes(opRec)
+        If times.HasValue Then
+            row.ActualStartTime = times.Value.OperationTimes.ProcessStart
+            row.ActualEndTime = times.Value.OperationTimes.ProcessEnd
+        End If
+    End Sub
 
     Private Function IsKilnAckRow(dt As DataTable,
                                   r As DataRow,

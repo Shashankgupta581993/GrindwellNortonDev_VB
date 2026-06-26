@@ -99,7 +99,8 @@ Public Class tunnelOptimizer_vf
                                     totalCarts As Integer,
                                     minOccPreferred As Double,
                                     maxOcc As Double,
-                                    Optional dryingToFiringBufferHours As Double = 6.0) As TunnelPlan
+                                    Optional dryingToFiringBufferHours As Double = 6.0,
+                                    Optional debug As SchedulerDebugCollector = Nothing) As TunnelPlan
 
         ValidateInputs(dt, cartsPerDay, totalCarts, minOccPreferred, maxOcc)
 
@@ -113,6 +114,22 @@ Public Class tunnelOptimizer_vf
 
         ' 2) Build candidates (op300 unscheduled, kiln type 2) AND compute readiness from ops<290
         Dim candidates As List(Of TunnelCandidate) = BuildCandidates(dt, dryingToFiringBufferHours)
+        If debug IsNot Nothing AndAlso debug.Enabled Then
+            Dim candidateIds As New HashSet(Of Integer)(candidates.Select(Function(x) x.FiringOpRec))
+            Dim beforeCount As Integer = dt.AsEnumerable().Count(Function(r) SafeInt(r(COL_OPNO)) = 300 AndAlso SafeStr(r(COL_KILNTYPE)).Trim() = "2")
+            For Each r As DataRow In dt.Rows
+                If SafeInt(r(COL_OPNO)) <> 300 OrElse SafeStr(r(COL_KILNTYPE)).Trim() <> "2" Then Continue For
+                Dim recNo As Integer = SafeInt(r(COL_OPREC))
+                Dim included As Boolean = candidateIds.Contains(recNo)
+                debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+                    .OptimizerName = "tunnelOptimizer_vf", .Stage = "TunnelFiring", .StepName = "FinalCandidateSet",
+                    .OrderNo = SafeStr(r(COL_ORDERNO)).Trim(), .RecordNo = recNo, .OperationNumber = 300,
+                    .BeforeCount = beforeCount, .AfterCount = candidates.Count, .Included = included,
+                    .ReasonCode = If(included, SchedulerDebugReasonCodes.OK_INCLUDED, SchedulerDebugReasonCodes.TUNNEL_NO_CART_SLOT),
+                    .ReasonDetail = If(included, "Included after tunnel filters.", "Excluded by one or more tunnel candidate filters.")
+                })
+            Next
+        End If
 
         ' Nothing to do
         Dim plan As New TunnelPlan With {
