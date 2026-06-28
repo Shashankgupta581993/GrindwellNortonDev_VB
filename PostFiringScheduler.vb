@@ -49,14 +49,8 @@ Public Class PostFiringScheduler
         Dim priorityField As Integer = TryGetFieldNumber(preactor, ordersTable, "Priority")
 
         Dim queue As New List(Of QueueItem)()
-        Dim rowByOpRec As New Dictionary(Of Integer, DataRow)()
-
-        For Each row As DataRow In routingDt.Rows
-            Dim opRec As Integer = SafeInt(row("OrdersID"))
-            If opRec > 0 AndAlso Not rowByOpRec.ContainsKey(opRec) Then
-                rowByOpRec.Add(opRec, row)
-            End If
-        Next
+        Dim rowByOpRec As Dictionary(Of Integer, DataRow) =
+            SharedHelpers.BuildOperationRowIndex(routingDt)
 
         For Each r As DataRow In routingDt.Rows
 
@@ -73,7 +67,7 @@ Public Class PostFiringScheduler
             Dim kilnAckOpRec As Integer = SafeInt(r("OrdersID"))
             If kilnAckOpRec <= 0 Then Continue For
 
-            Dim kilnAckEnd As DateTime = SafeDate(r("operation_release_time"))
+            Dim kilnAckEnd As DateTime = SharedHelpers.SafeDate(r("operation_release_time"))
             If kilnAckEnd = DateTime.MinValue Then Continue For
 
             ' First unscheduled operation after KILNACK
@@ -393,15 +387,6 @@ Public Class PostFiringScheduler
         Return s = "1" OrElse
                s.Equals("Y", StringComparison.OrdinalIgnoreCase) OrElse
                s.Equals("YES", StringComparison.OrdinalIgnoreCase)
-    End Function
-
-    Private Function SafeDate(v As Object) As DateTime
-        If v Is Nothing OrElse v Is DBNull.Value Then Return DateTime.MinValue
-
-        Dim result As DateTime
-        If DateTime.TryParse(v.ToString(), result) Then Return result
-
-        Return DateTime.MinValue
     End Function
 
 End Class

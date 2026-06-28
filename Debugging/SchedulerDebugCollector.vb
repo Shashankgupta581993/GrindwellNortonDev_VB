@@ -9,6 +9,7 @@ Imports Preactor
 
 Public Class SchedulerDebugCollector
     Private _attemptNo As Integer
+    Private _operationSnapshotByRecord As Dictionary(Of Integer, OperationSnapshot)
     Public ReadOnly Property RunId As String
     Public ReadOnly Property ExportedAt As DateTime
     Public Property Enabled As Boolean
@@ -69,8 +70,28 @@ Public Class SchedulerDebugCollector
         FieldMapRows.Add(row)
     End Sub
     Public Sub AddSnapshot(row As OperationSnapshot)
-        If row IsNot Nothing Then OperationSnapshots.Add(row)
+        If row IsNot Nothing Then
+            OperationSnapshots.Add(row)
+            _operationSnapshotByRecord = Nothing
+        End If
     End Sub
+
+    Public Function FindOperationSnapshot(recordNo As Integer) As OperationSnapshot
+        If recordNo <= 0 Then Return Nothing
+
+        If _operationSnapshotByRecord Is Nothing Then
+            _operationSnapshotByRecord = New Dictionary(Of Integer, OperationSnapshot)()
+            For Each snapshot As OperationSnapshot In OperationSnapshots
+                If Not _operationSnapshotByRecord.ContainsKey(snapshot.RecordNo) Then
+                    _operationSnapshotByRecord.Add(snapshot.RecordNo, snapshot)
+                End If
+            Next
+        End If
+
+        Dim result As OperationSnapshot = Nothing
+        _operationSnapshotByRecord.TryGetValue(recordNo, result)
+        Return result
+    End Function
     Public Sub AddWipDiagnostic(row As WipDiagnosticRow)
         If row IsNot Nothing Then WipDiagnostics.Add(row)
     End Sub

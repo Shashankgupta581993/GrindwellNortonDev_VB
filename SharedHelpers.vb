@@ -9,6 +9,42 @@ Imports Preactor
 
 Public Module SharedHelpers
 
+    Private ReadOnly MinimumOperationalDate As New DateTime(1900, 1, 1)
+
+    ' Numeric project dates are interpreted deterministically. Day-first
+    ' formats intentionally precede US slash formats so ambiguous values such
+    ' as 07/12/2026 mean 7 December, matching the Opcenter data convention.
+    Private ReadOnly KnownDateFormats As String() = {
+        "dd-MM-yyyy HH:mm:ss",
+        "d-M-yyyy H:mm:ss",
+        "dd-MM-yyyy H:mm:ss",
+        "d-M-yyyy HH:mm:ss",
+        "dd-MM-yyyy HH:mm:ss.FFFFFFF",
+        "d-M-yyyy H:mm:ss.FFFFFFF",
+        "dd-MM-yyyy",
+        "d-M-yyyy",
+        "dd/MM/yyyy HH:mm:ss",
+        "d/M/yyyy H:mm:ss",
+        "dd/MM/yyyy H:mm:ss",
+        "d/M/yyyy HH:mm:ss",
+        "dd/MM/yyyy HH:mm:ss.FFFFFFF",
+        "d/M/yyyy H:mm:ss.FFFFFFF",
+        "dd/MM/yyyy",
+        "d/M/yyyy",
+        "yyyy-MM-dd HH:mm:ss",
+        "yyyy-M-d H:mm:ss",
+        "yyyy-MM-dd HH:mm:ss.FFFFFFF",
+        "yyyy-M-d H:mm:ss.FFFFFFF",
+        "yyyy-MM-dd'T'HH:mm:ss",
+        "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF",
+        "yyyy-MM-dd",
+        "yyyy-M-d",
+        "MM/dd/yyyy HH:mm:ss",
+        "M/d/yyyy H:mm:ss",
+        "MM/dd/yyyy",
+        "M/d/yyyy"
+    }
+
     Public Class WipInfo
         Public Property ParentRecord As Integer
         Public Property CurrentOpRec As Integer
@@ -69,14 +105,89 @@ Public Module SharedHelpers
         Return 0
     End Function
 
+    'Public Function SafeDate(o As Object) As DateTime
+    '    If o Is Nothing Then Return DateTime.MinValue
+    '    If TypeOf o Is DateTime Then Return CType(o, DateTime)
+    '    Dim d As DateTime
+    '    If DateTime.TryParse(o.ToString(), CultureInfo.InvariantCulture, DateTimeStyles.None, d) Then Return d
+    '    Return DateTime.MinValue
+    'End Function
     Public Function SafeDate(o As Object) As DateTime
-        If o Is Nothing Then Return DateTime.MinValue
-        If TypeOf o Is DateTime Then Return CType(o, DateTime)
-        Dim d As DateTime
-        If DateTime.TryParse(o.ToString(), CultureInfo.InvariantCulture, DateTimeStyles.None, d) Then Return d
+        Dim parsed As DateTime
+        If TryParseDateValue(o, parsed) Then Return parsed
         Return DateTime.MinValue
     End Function
 
+    Public Function TryParseDateValue(value As Object,
+                                      ByRef parsed As DateTime) As Boolean
+        parsed = DateTime.MinValue
+
+        If value Is Nothing OrElse Object.ReferenceEquals(value, DBNull.Value) Then
+            Return False
+        End If
+
+        If TypeOf value Is DateTime Then
+            parsed = DirectCast(value, DateTime)
+            Return parsed > MinimumOperationalDate
+        End If
+
+        If TypeOf value Is DateTimeOffset Then
+            parsed = DirectCast(value, DateTimeOffset).DateTime
+            Return parsed > MinimumOperationalDate
+        End If
+
+        Dim s As String = Convert.ToString(value, CultureInfo.InvariantCulture).Trim()
+        If s.Length = 0 Then Return False
+
+        If DateTime.TryParseExact(s,
+                                  KnownDateFormats,
+                                  CultureInfo.InvariantCulture,
+                                  DateTimeStyles.AllowWhiteSpaces,
+                                  parsed) Then
+            Return parsed > MinimumOperationalDate
+        End If
+
+        ' Do not let the machine culture reinterpret an unrecognized numeric
+        ' date by swapping its day and month.
+        If LooksLikeNumericDate(s) Then Return False
+
+        If DateTime.TryParse(s,
+                             CultureInfo.CurrentCulture,
+                             DateTimeStyles.AllowWhiteSpaces,
+                             parsed) Then
+            Return parsed > MinimumOperationalDate
+        End If
+
+        If DateTime.TryParse(s,
+                             CultureInfo.InvariantCulture,
+                             DateTimeStyles.AllowWhiteSpaces,
+                             parsed) Then
+            Return parsed > MinimumOperationalDate
+        End If
+
+        Return False
+    End Function
+
+    Private Function LooksLikeNumericDate(value As String) As Boolean
+        Dim datePart As String = value
+        Dim separatorIndex As Integer = value.IndexOfAny(New Char() {" "c, "T"c})
+        If separatorIndex >= 0 Then datePart = value.Substring(0, separatorIndex)
+
+        If datePart.Length = 0 Then Return False
+
+        For Each character As Char In datePart
+            If Not Char.IsDigit(character) AndAlso
+               character <> "-"c AndAlso
+               character <> "/"c AndAlso
+               character <> "."c Then
+                Return False
+            End If
+        Next
+
+        Return datePart.IndexOf("-"c) >= 0 OrElse
+               datePart.IndexOf("/"c) >= 0 OrElse
+               datePart.IndexOf("."c) >= 0
+    End Function
     Public Function SafeStr(o As Object) As String
         If o Is Nothing Then Return ""
         Return o.ToString()
@@ -206,26 +317,30 @@ Public Module SharedHelpers
         Throw New FormatException("Invalid date: " & s)
     End Function
 
+    'Public Function ParseDueAsEndOfDay(o As Object) As DateTime
+    '    Dim s As String = SafeStr(o).Trim()
+    '    If s = "" Then Return DateTime.MinValue
+
+    '    Dim d As DateTime
+    '    If DateTime.TryParseExact(s,
+    '                              "dd-MM-yyyy",
+    '                              CultureInfo.InvariantCulture,
+    '                              DateTimeStyles.None,
+    '                              d) Then
+    '        Return d.Date.AddDays(1).AddTicks(-1) ' end of day
+    '    End If
+
+    '    If DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, d) Then
+    '        Return d.Date.AddDays(1).AddTicks(-1)
+    '    End If
+
+    '    Return DateTime.MinValue
+    'End Function
     Public Function ParseDueAsEndOfDay(o As Object) As DateTime
-        Dim s As String = SafeStr(o).Trim()
-        If s = "" Then Return DateTime.MinValue
-
-        Dim d As DateTime
-        If DateTime.TryParseExact(s,
-                                  "dd-MM-yyyy",
-                                  CultureInfo.InvariantCulture,
-                                  DateTimeStyles.None,
-                                  d) Then
-            Return d.Date.AddDays(1).AddTicks(-1) ' end of day
-        End If
-
-        If DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, d) Then
-            Return d.Date.AddDays(1).AddTicks(-1)
-        End If
-
-        Return DateTime.MinValue
+        Dim parsed As DateTime = SafeDate(o)
+        If parsed = DateTime.MinValue Then Return DateTime.MinValue
+        Return parsed.Date.AddDays(1).AddTicks(-1)
     End Function
-
 
 
     ' ----------------------
@@ -404,6 +519,15 @@ Public Module SharedHelpers
                               })
         'Dim parentRecord = preactor.GetFieldNumber(ordersTable, "Belongs to Order No.")
         Dim rowCount = preactor.RecordCount(ordersTable)
+        Dim scheduledByRecord(rowCount) As Boolean
+
+        ' Snapshot the board status once per operation. The previous-operation
+        ' flags below can then reuse the same snapshot instead of making a
+        ' second COM call for nearly every row.
+        For rec As Integer = 1 To rowCount
+            scheduledByRecord(rec) = planningboard.IsOperationScheduled(rec)
+        Next
+
         Dim parentRecordByOrderNo As New Dictionary(Of String, Integer)(
             StringComparer.OrdinalIgnoreCase)
 
@@ -412,7 +536,7 @@ Public Module SharedHelpers
 
             ' 2. Cache values used multiple times to avoid redundant API reads
             Dim currentOpNo As Integer = preactor.ReadFieldInt(ordersTable, opNo, rec)
-            Dim isScheduled As Boolean = planningboard.IsOperationScheduled(rec)
+            Dim isScheduled As Boolean = scheduledByRecord(rec)
             Dim currentOrderNo As String =
                 preactor.ReadFieldString(ordersTable, orderNo, rec).Trim()
 
@@ -420,7 +544,7 @@ Public Module SharedHelpers
             r("Order No") = currentOrderNo
             'r("Part Number") = preactor.ReadFieldString(ordersTable, partNo, rec)
             'r("Part Name") = preactor.ReadFieldString(ordersTable, product, rec)
-            r("Operation Number") = preactor.ReadFieldInt(ordersTable, opNo, rec)
+            r("Operation Number") = currentOpNo
             r("Operation Name") = preactor.ReadFieldString(ordersTable, opName, rec)
             r("Resource Group") = preactor.ReadFieldString(ordersTable, resGroup, rec)
             r("Required Resource") = preactor.ReadFieldString(ordersTable, res, rec)
@@ -451,10 +575,29 @@ Public Module SharedHelpers
             r("firing due date") = preactor.ReadFieldDateTime(ordersTable, firingDue, rec)
 
             ' 3. Streamlined scheduling assignment
+            'r("is_scheduled") = isScheduled
+            'If isScheduled Then
+            '    r("scheduled_start_time") = preactor.ReadFieldDateTime(ordersTable, schStart, rec)
+            '    r("scheduled_end_time") = preactor.ReadFieldDateTime(ordersTable, schEnd, rec)
+            'End If
             r("is_scheduled") = isScheduled
+
             If isScheduled Then
-                r("scheduled_start_time") = preactor.ReadFieldDateTime(ordersTable, schStart, rec)
-                r("scheduled_end_time") = preactor.ReadFieldDateTime(ordersTable, schEnd, rec)
+                Dim liveTimes As Nullable(Of Preactor.OperationResourceTimes) = Nothing
+
+                Try
+                    liveTimes = planningboard.GetOperationTimes(rec)
+                Catch
+                    liveTimes = Nothing
+                End Try
+
+                If liveTimes.HasValue Then
+                    r("scheduled_start_time") = liveTimes.Value.OperationTimes.ProcessStart
+                    r("scheduled_end_time") = liveTimes.Value.OperationTimes.ProcessEnd
+                Else
+                    r("scheduled_start_time") = preactor.ReadFieldDateTime(ordersTable, schStart, rec)
+                    r("scheduled_end_time") = preactor.ReadFieldDateTime(ordersTable, schEnd, rec)
+                End If
             End If
             Dim sourceCompleted As Boolean =
             ReadBoolField(preactor, ordersTable, sourceCompletedField, rec)
@@ -508,7 +651,11 @@ Public Module SharedHelpers
                 prevOpRec = planningboard.GetPreviousOperation(rec, 1)
 
                 If prevOpRec > 0 Then
-                    r("prev_op_is_scheduled") = planningboard.IsOperationScheduled(prevOpRec)
+                    If prevOpRec <= rowCount Then
+                        r("prev_op_is_scheduled") = scheduledByRecord(prevOpRec)
+                    Else
+                        r("prev_op_is_scheduled") = planningboard.IsOperationScheduled(prevOpRec)
+                    End If
                 End If
 
             Catch ex As Exception
@@ -999,6 +1146,32 @@ Public Module SharedHelpers
 
     End Function
 
+    Public Function BuildOperationRowIndex(routingDt As DataTable) As Dictionary(Of Integer, DataRow)
+        Dim result As New Dictionary(Of Integer, DataRow)()
+        If routingDt Is Nothing Then Return result
+
+        For Each row As DataRow In routingDt.Rows
+            Dim opRec As Integer = SafeInt(row("OrdersID"))
+            If opRec > 0 AndAlso Not result.ContainsKey(opRec) Then
+                result.Add(opRec, row)
+            End If
+        Next
+
+        Return result
+    End Function
+
+    Public Function IsCompletedOrActualizedOp(operationRows As IDictionary(Of Integer, DataRow),
+                                               opRec As Integer) As Boolean
+        If operationRows Is Nothing OrElse opRec <= 0 Then Return False
+
+        Dim row As DataRow = Nothing
+        If operationRows.TryGetValue(opRec, row) Then
+            Return IsCompletedOrActualizedRow(row)
+        End If
+
+        Return False
+    End Function
+
     Public Function GetOperationReleaseTime(routingDt As DataTable,
                                         opRec As Integer) As DateTime
 
@@ -1012,6 +1185,18 @@ Public Module SharedHelpers
 
         Return DateTime.MinValue
 
+    End Function
+
+    Public Function GetOperationReleaseTime(operationRows As IDictionary(Of Integer, DataRow),
+                                            opRec As Integer) As DateTime
+        If operationRows Is Nothing OrElse opRec <= 0 Then Return DateTime.MinValue
+
+        Dim row As DataRow = Nothing
+        If operationRows.TryGetValue(opRec, row) Then
+            Return SafeDate(row("operation_release_time"))
+        End If
+
+        Return DateTime.MinValue
     End Function
     Public Sub PopulateWipColumns(dt As DataTable, planningboard As IPlanningBoard, terminatorTime As DateTime)
 
@@ -1350,25 +1535,91 @@ Public Module SharedHelpers
 
         Return lastEnd
     End Function
+
+    Public Function GetResourceLastScheduledEnds(
+                                                preactor As IPreactor,
+                                                planningboard As IPlanningBoard,
+                                                resourceRecs As IEnumerable(Of Integer)) As Dictionary(Of Integer, DateTime)
+
+        Dim result As New Dictionary(Of Integer, DateTime)()
+        Dim requestedResources As New HashSet(Of Integer)(
+            resourceRecs.Where(Function(resourceRec) resourceRec > 0))
+
+        If requestedResources.Count = 0 Then Return result
+
+        Dim ordersFmt As Integer = preactor.GetFormatNumber("Orders")
+        Dim reqResFieldNo As Integer = preactor.GetFieldNumber(ordersFmt, "Resource")
+        Dim recordCount As Integer = preactor.RecordCount(ordersFmt)
+
+        For opRec As Integer = 1 To recordCount
+            If Not planningboard.IsOperationScheduled(opRec) Then Continue For
+
+            Dim opResRec As Integer =
+                preactor.ReadFieldInt(ordersFmt, reqResFieldNo, opRec)
+            If Not requestedResources.Contains(opResRec) Then Continue For
+
+            Dim times As Nullable(Of Preactor.OperationResourceTimes) =
+                planningboard.GetOperationTimes(opRec)
+            If Not times.HasValue Then Continue For
+
+            Dim opEnd As DateTime = times.Value.OperationTimes.ProcessEnd
+            Dim lastEnd As DateTime
+            If Not result.TryGetValue(opResRec, lastEnd) OrElse opEnd > lastEnd Then
+                result(opResRec) = opEnd
+            End If
+        Next
+
+        Return result
+    End Function
+
     Public Function BuildEffectiveStartByResource(preactor As IPreactor,
-                                              planningboard As IPlanningBoard,
-                                              resourceNames As IEnumerable(Of String),
-                                              Optional metadataDates As Dictionary(Of String, DateTime) = Nothing) As Dictionary(Of String, DateTime)
+                                               planningboard As IPlanningBoard,
+                                               resourceNames As IEnumerable(Of String),
+                                               Optional metadataDates As Dictionary(Of String, DateTime) = Nothing) As Dictionary(Of String, DateTime)
 
         Dim result As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+        Dim names As List(Of String) = resourceNames.ToList()
+        Dim resourceRecByName As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
 
-        For Each resourceName As String In resourceNames
+        For Each resourceName As String In names
+            If String.IsNullOrWhiteSpace(resourceName) Then Continue For
+
+            Dim resourceRec As Integer = planningboard.GetResourceNumber(resourceName)
+            If resourceRec <= 0 Then
+                Throw New Exception("Resource not found: " & resourceName)
+            End If
+            resourceRecByName(resourceName) = resourceRec
+        Next
+
+        Dim lastEndByResource As Dictionary(Of Integer, DateTime) =
+            GetResourceLastScheduledEnds(preactor,
+                                         planningboard,
+                                         resourceRecByName.Values)
+
+        For Each resourceName As String In names
 
             If String.IsNullOrWhiteSpace(resourceName) Then Continue For
 
             Dim metadataDate As DateTime = DateTime.MinValue
 
-            If metadataDates IsNot Nothing AndAlso metadataDates.ContainsKey(resourceName) Then
-                metadataDate = metadataDates(resourceName)
+            If metadataDates IsNot Nothing Then
+                metadataDates.TryGetValue(resourceName, metadataDate)
             End If
 
-            result(resourceName) =
-            GetEffectiveResourceStart(preactor, planningboard, resourceName, metadataDate)
+            Dim lastScheduledEnd As DateTime = DateTime.MinValue
+            lastEndByResource.TryGetValue(resourceRecByName(resourceName), lastScheduledEnd)
+
+            Dim effective As DateTime =
+                MaxDate(planningboard.TerminatorTime, metadataDate, lastScheduledEnd)
+            result(resourceName) = effective
+
+            System.Diagnostics.Debug.WriteLine(
+                "Effective Resource Start | Resource=" & resourceName &
+                " | Terminator=" & FormatDateOrBlank(planningboard.TerminatorTime) &
+                " | Metadata=" & FormatDateOrBlank(metadataDate) &
+                " | LastScheduledEnd=" & FormatDateOrBlank(lastScheduledEnd) &
+                " | Effective=" & FormatDateOrBlank(effective)
+            )
 
         Next
 
@@ -1794,19 +2045,22 @@ Public Module SharedHelpers
 
     End Function
     Public Function BuildEffectiveStartByResourceFromGnKilnAvailability(preactor As IPreactor,
-                                                                    planningboard As IPlanningBoard,
-                                                                    resourceNames As IEnumerable(Of String)) As Dictionary(Of String, DateTime)
+                                                                     planningboard As IPlanningBoard,
+                                                                     resourceNames As IEnumerable(Of String)) As Dictionary(Of String, DateTime)
 
         Dim result As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
 
         Dim terminator As DateTime = planningboard.TerminatorTime
+        Dim names As List(Of String) = resourceNames.ToList()
 
         Dim metadataDates As Dictionary(Of String, DateTime) =
             BuildMetadataAvailabilityFromGnKilnAvailability(preactor,
-                                                            resourceNames,
+                                                            names,
                                                             terminator)
 
-        For Each resourceName As String In resourceNames
+        Dim resourceRecByName As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+
+        For Each resourceName As String In names
 
             If String.IsNullOrWhiteSpace(resourceName) Then Continue For
 
@@ -1814,20 +2068,26 @@ Public Module SharedHelpers
             If resourceRec <= 0 Then
                 Throw New Exception("Resource not found: " & resourceName)
             End If
+            resourceRecByName(resourceName) = resourceRec
+        Next
+
+        Dim lastEndByResource As Dictionary(Of Integer, DateTime) =
+            GetResourceLastScheduledEnds(preactor,
+                                         planningboard,
+                                         resourceRecByName.Values)
+
+        For Each resourceName As String In names
+
+            If String.IsNullOrWhiteSpace(resourceName) Then Continue For
+
+            Dim resourceRec As Integer = resourceRecByName(resourceName)
 
             Dim metadataDate As DateTime = DateTime.MinValue
-            If metadataDates.ContainsKey(resourceName) Then
-                metadataDate = metadataDates(resourceName)
-            End If
+            metadataDates.TryGetValue(resourceName, metadataDate)
 
             Dim lastScheduledEnd As DateTime = DateTime.MinValue
 
-            Dim lastEndNullable As Nullable(Of DateTime) =
-                GetResourceLastScheduledEnd(preactor, planningboard, resourceRec)
-
-            If lastEndNullable.HasValue Then
-                lastScheduledEnd = lastEndNullable.Value
-            End If
+            lastEndByResource.TryGetValue(resourceRec, lastScheduledEnd)
 
             Dim effectiveStart As DateTime =
                 MaxDate(terminator, metadataDate, lastScheduledEnd)

@@ -113,23 +113,8 @@ Public Class tunnelOptimizer_vf
         Dim tunnelDuration As TimeSpan = TimeSpan.FromTicks(tunnelDurTicks)
 
         ' 2) Build candidates (op300 unscheduled, kiln type 2) AND compute readiness from ops<290
-        Dim candidates As List(Of TunnelCandidate) = BuildCandidates(dt, dryingToFiringBufferHours)
-        If debug IsNot Nothing AndAlso debug.Enabled Then
-            Dim candidateIds As New HashSet(Of Integer)(candidates.Select(Function(x) x.FiringOpRec))
-            Dim beforeCount As Integer = dt.AsEnumerable().Count(Function(r) SafeInt(r(COL_OPNO)) = 300 AndAlso SafeStr(r(COL_KILNTYPE)).Trim() = "2")
-            For Each r As DataRow In dt.Rows
-                If SafeInt(r(COL_OPNO)) <> 300 OrElse SafeStr(r(COL_KILNTYPE)).Trim() <> "2" Then Continue For
-                Dim recNo As Integer = SafeInt(r(COL_OPREC))
-                Dim included As Boolean = candidateIds.Contains(recNo)
-                debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
-                    .OptimizerName = "tunnelOptimizer_vf", .Stage = "TunnelFiring", .StepName = "FinalCandidateSet",
-                    .OrderNo = SafeStr(r(COL_ORDERNO)).Trim(), .RecordNo = recNo, .OperationNumber = 300,
-                    .BeforeCount = beforeCount, .AfterCount = candidates.Count, .Included = included,
-                    .ReasonCode = If(included, SchedulerDebugReasonCodes.OK_INCLUDED, SchedulerDebugReasonCodes.TUNNEL_NO_CART_SLOT),
-                    .ReasonDetail = If(included, "Included after tunnel filters.", "Excluded by one or more tunnel candidate filters.")
-                })
-            Next
-        End If
+        Dim candidates As List(Of TunnelCandidate) =
+            BuildCandidates(dt, dryingToFiringBufferHours, debug)
 
         ' Nothing to do
         Dim plan As New TunnelPlan With {
@@ -150,23 +135,18 @@ Public Class tunnelOptimizer_vf
 
         While remaining.Count > 0
 
-            ' Get orders that are ready by current cart start
-            Dim readyNow As List(Of TunnelCandidate) = remaining.FindAll(
-                Function(x) x.ReadyTime <= nextCartStart
-            )
+            ' Build the ready pool and, when necessary, the earliest future
+            ' readiness group in one order-preserving pass.
+            Dim earliestReady As DateTime
+            Dim advancedToEarliest As Boolean
+            Dim readyNow As List(Of TunnelCandidate) =
+                GetReadyCandidates(remaining,
+                                   nextCartStart,
+                                   earliestReady,
+                                   advancedToEarliest)
 
-            ' If none ready, slip cart start to earliest next readiness (Rule: "use readiness as release time")
-            If readyNow.Count = 0 Then
-                Dim earliestReady As DateTime = DateTime.MaxValue
-                For Each x In remaining
-                    If x.ReadyTime < earliestReady Then earliestReady = x.ReadyTime
-                Next
-
-                ' No valid readiness at all (should not happen if Rule 3 filters properly), break safely
-                If earliestReady = DateTime.MaxValue Then Exit While
-
+            If advancedToEarliest Then
                 nextCartStart = earliestReady
-                readyNow = remaining.FindAll(Function(x) x.ReadyTime <= nextCartStart)
             End If
 
             ' Safety: if still empty, stop (prevents infinite loop)
@@ -187,6 +167,7 @@ Public Class tunnelOptimizer_vf
             cartNo += 1
             Dim cartStart As DateTime = nextCartStart
             Dim cartEnd As DateTime = cartStart.Add(tunnelDuration)
+            Dim chosenSet As New HashSet(Of TunnelCandidate)(chosen)
 
             ' Commit cart slot
             Dim slot As New CartSlot With {
@@ -206,9 +187,9 @@ Public Class tunnelOptimizer_vf
                 plan.StartByFiringOpRec(o.FiringOpRec) = cartStart
                 plan.EndByFiringOpRec(o.FiringOpRec) = cartEnd
                 plan.CartNoByFiringOpRec(o.FiringOpRec) = cartNo
-
-                remaining.Remove(o)
             Next
+
+            remaining.RemoveAll(Function(candidate) chosenSet.Contains(candidate))
 
             plan.Carts.Add(slot)
 
@@ -221,10 +202,44 @@ Public Class tunnelOptimizer_vf
         Return plan
     End Function
 
+    Private Function GetReadyCandidates(remaining As List(Of TunnelCandidate),
+                                        currentStart As DateTime,
+                                        ByRef earliestReady As DateTime,
+                                        ByRef advancedToEarliest As Boolean) As List(Of TunnelCandidate)
+
+        Dim readyNow As New List(Of TunnelCandidate)()
+        Dim earliestCandidates As New List(Of TunnelCandidate)()
+        earliestReady = DateTime.MaxValue
+        advancedToEarliest = False
+
+        For Each candidate As TunnelCandidate In remaining
+            If candidate.ReadyTime <= currentStart Then
+                readyNow.Add(candidate)
+            End If
+
+            If candidate.ReadyTime < earliestReady Then
+                earliestReady = candidate.ReadyTime
+                earliestCandidates.Clear()
+                earliestCandidates.Add(candidate)
+            ElseIf candidate.ReadyTime = earliestReady Then
+                earliestCandidates.Add(candidate)
+            End If
+        Next
+
+        If readyNow.Count = 0 AndAlso earliestReady <> DateTime.MaxValue Then
+            readyNow.AddRange(earliestCandidates)
+            advancedToEarliest = True
+        End If
+
+        Return readyNow
+    End Function
+
     ' -----------------------------
     ' Candidate building
     ' -----------------------------
-    Private Function BuildCandidates(dt As DataTable, dryingToFiringBufferHours As Double) As List(Of TunnelCandidate)
+    Private Function BuildCandidates(dt As DataTable,
+                                     dryingToFiringBufferHours As Double,
+                                     Optional debug As SchedulerDebugCollector = Nothing) As List(Of TunnelCandidate)
 
         ' readiness per order = max scheduled_end_time among scheduled ops with opNo < 290
         'Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
@@ -253,41 +268,90 @@ Public Class tunnelOptimizer_vf
 
         ' Build candidates from op 300 rows (unscheduled) for tunnel kiln type = 2
         Dim list As New List(Of TunnelCandidate)()
+        Dim beforeCount As Integer = 0
+        If debug IsNot Nothing AndAlso debug.Enabled Then
+            beforeCount = dt.AsEnumerable().Count(
+                Function(row) SafeInt(row(COL_OPNO)) = 300)
+        End If
 
         For Each r As DataRow In dt.Rows
-
-            Dim kilnType As String = SafeStr(r(COL_KILNTYPE)).Trim()
-            If Not kilnType.Equals("2", StringComparison.OrdinalIgnoreCase) Then Continue For
 
             Dim opNo As Integer = SafeInt(r(COL_OPNO))
             If opNo <> 300 Then Continue For
 
-            If SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
+            Dim kilnType As String = SafeStr(r(COL_KILNTYPE)).Trim()
+            If Not kilnType.Equals("2", StringComparison.OrdinalIgnoreCase) Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.FIRING_KILN_TYPE_UNSUPPORTED,
+                                       "Expected tunnel kiln type 2; actual value='" &
+                                       kilnType & "'.")
+                Continue For
+            End If
+
+            If SafeBool(r(COL_IS_SCHEDULED)) Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.WIP_CURRENT_OPERATION_ALREADY_SCHEDULED,
+                                       "Firing operation 300 is already scheduled.")
+                Continue For
+            End If
 
             Dim wipStatus As String = SharedHelpers.SafeStr(r("wip_status")).Trim()
-            If Not wipStatus.Equals("Candidate", StringComparison.OrdinalIgnoreCase) Then Continue For
+            If Not wipStatus.Equals("Candidate", StringComparison.OrdinalIgnoreCase) Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.WIP_STATUS_NOT_CANDIDATE,
+                                       "Expected wip_status='Candidate'; actual value='" &
+                                       wipStatus & "'.")
+                Continue For
+            End If
 
             Dim wipScore As Integer = SharedHelpers.SafeInt(r("wip_score"))
             Dim wipRejectReason As String = SharedHelpers.SafeStr(r("wip_reject_reason"))
 
 
             Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
-            If orderNo = "" Then Continue For
+            If orderNo = "" Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.DATA_MISSING_ORDER_NO,
+                                       "Order No is blank.")
+                Continue For
+            End If
 
             ' Rule 3: ensure prior ops (<290) are scheduled -> must have readiness
             'If Not readyByOrder.ContainsKey(orderNo) Then Continue For
             Dim readiness As SharedHelpers.FiringReadinessInfo = Nothing
 
-            If Not readinessByOrder.TryGetValue(orderNo, readiness) Then Continue For
+            If Not readinessByOrder.TryGetValue(orderNo, readiness) Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.FIRING_PREV_OP_NOT_READY,
+                                       "No firing readiness was produced for this order.")
+                Continue For
+            End If
 
             Dim firingOpRec As Integer = SafeInt(r(COL_OPREC))
-            If firingOpRec <= 0 Then Continue For
+            If firingOpRec <= 0 Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.DATA_MISSING_OPERATION,
+                                       "OrdersID for firing operation 300 is invalid.")
+                Continue For
+            End If
 
             Dim occ As Double = SafeDbl(r(COL_OCC))
-            If occ <= 0 Then Continue For
+            If occ <= 0 Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.DATA_INVALID_OCCUPANCY,
+                                       "Volume Occupancy must be positive; actual value='" &
+                                       SafeStr(r(COL_OCC)).Trim() & "'.")
+                Continue For
+            End If
 
-            Dim due As DateTime = ParseDueAsEndOfDay(r(COL_FIRING_DUE))
-            If due = DateTime.MinValue Then Continue For
+            Dim due As DateTime = SharedHelpers.ParseDueAsEndOfDay(r(COL_FIRING_DUE))
+            If due = DateTime.MinValue Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.DATA_INVALID_DATE,
+                                       "Invalid firing due date raw value='" &
+                                       SafeStr(r(COL_FIRING_DUE)).Trim() & "'.")
+                Continue For
+            End If
 
             'Dim ready As DateTime = readyByOrder(orderNo).AddHours(dryingToFiringBufferHours)
             Dim ready As DateTime = readiness.ReadyTime
@@ -306,10 +370,49 @@ Public Class tunnelOptimizer_vf
                 .WipScore = wipScore,
                 .WipRejectReason = wipRejectReason
             })
+
+            TraceCandidateDecision(debug, r, beforeCount, list.Count, True,
+                                   SchedulerDebugReasonCodes.OK_INCLUDED,
+                                   "Included. Due=" &
+                                   due.ToString("yyyy-MM-dd HH:mm:ss.fffffff",
+                                                CultureInfo.InvariantCulture) &
+                                   "; Ready=" &
+                                   ready.ToString("yyyy-MM-dd HH:mm:ss",
+                                                  CultureInfo.InvariantCulture) & ".")
         Next
 
         Return list
     End Function
+
+    Private Sub TraceCandidateDecision(debug As SchedulerDebugCollector,
+                                       row As DataRow,
+                                       beforeCount As Integer,
+                                       afterCount As Integer,
+                                       included As Boolean,
+                                       reasonCode As String,
+                                       reasonDetail As String)
+        If debug Is Nothing OrElse Not debug.Enabled Then Return
+
+        Dim parentRecord As Integer = 0
+        If row.Table.Columns.Contains("parent_record") Then
+            parentRecord = SafeInt(row("parent_record"))
+        End If
+
+        debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+            .OptimizerName = "tunnelOptimizer_vf",
+            .Stage = "TunnelFiring",
+            .StepName = "CandidateFilter",
+            .OrderNo = SafeStr(row(COL_ORDERNO)).Trim(),
+            .ParentRecordNo = parentRecord,
+            .RecordNo = SafeInt(row(COL_OPREC)),
+            .OperationNumber = SafeInt(row(COL_OPNO)),
+            .BeforeCount = beforeCount,
+            .AfterCount = afterCount,
+            .Included = included,
+            .ReasonCode = reasonCode,
+            .ReasonDetail = reasonDetail
+        })
+    End Sub
 
     ' -----------------------------
     ' Cart packing (Rule 2 + Rule 5)
@@ -354,12 +457,14 @@ Public Class tunnelOptimizer_vf
         sorted.Sort(AddressOf CompareByDueReadyOcc)
 
         Dim chosen As New List(Of TunnelCandidate)()
+        Dim chosenSet As New HashSet(Of TunnelCandidate)()
         Dim occSum As Double = 0.0
 
         ' First preserve EDD: take the most urgent feasible order.
         For Each c In sorted
             If c.Occ <= maxOcc + 0.0000001 Then
                 chosen.Add(c)
+                chosenSet.Add(c)
                 occSum += c.Occ
                 Exit For
             End If
@@ -369,10 +474,11 @@ Public Class tunnelOptimizer_vf
 
         ' Then fill remaining space with any ready order that fits.
         For Each c In sorted
-            If chosen.Contains(c) Then Continue For
+            If chosenSet.Contains(c) Then Continue For
 
             If occSum + c.Occ <= maxOcc + 0.0000001 Then
                 chosen.Add(c)
+                chosenSet.Add(c)
                 occSum += c.Occ
             End If
         Next
@@ -436,24 +542,6 @@ Public Class tunnelOptimizer_vf
         Return (-a.Occ.CompareTo(b.Occ))
     End Function
 
-    ' Parse “firing due date” as end-of-day (same semantics as your firing optimizer uses)
-    Private Function ParseDueAsEndOfDay(o As Object) As DateTime
-        ' If you already have SharedHelpers.ParseDueAsEndOfDay, you can replace this body with it.
-        If o Is Nothing OrElse o Is DBNull.Value Then Return DateTime.MinValue
-
-        Dim s As String = Convert.ToString(o, CultureInfo.InvariantCulture).Trim()
-        If s = "" Then Return DateTime.MinValue
-
-        Dim dt As DateTime
-        ' Try common date formats; extend if needed
-        If DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, dt) Then
-            ' End of that day
-            Return New DateTime(dt.Year, dt.Month, dt.Day, 23, 59, 59)
-        End If
-
-        Return DateTime.MinValue
-    End Function
-
     ' Minimal “safe” converters (swap to your SharedHelpers if you prefer)
     Private Function SafeStr(o As Object) As String
         If o Is Nothing OrElse o Is DBNull.Value Then Return ""
@@ -483,15 +571,6 @@ Public Class tunnelOptimizer_vf
         If TypeOf o Is Boolean Then Return CBool(o)
         Dim s As String = Convert.ToString(o, CultureInfo.InvariantCulture).Trim().ToLowerInvariant()
         Return (s = "1" OrElse s = "true" OrElse s = "yes" OrElse s = "y")
-    End Function
-
-    Private Function SafeDate(o As Object) As DateTime
-        If o Is Nothing OrElse o Is DBNull.Value Then Return DateTime.MinValue
-        If TypeOf o Is DateTime Then Return CDate(o)
-        Dim s As String = Convert.ToString(o, CultureInfo.InvariantCulture).Trim()
-        Dim dt As DateTime
-        If DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, dt) Then Return dt
-        Return DateTime.MinValue
     End Function
 
 End Class
