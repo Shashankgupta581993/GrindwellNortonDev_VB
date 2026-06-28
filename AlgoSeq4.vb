@@ -2039,6 +2039,10 @@ Public Class AlgoSeq4
     Private Sub BeginSchedulerDebug(preactor As IPreactor)
         Try
             _schedulerDebug = New SchedulerDebugCollector()
+            If Not _schedulerDebug.Enabled Then
+                _schedulerDebug = Nothing
+                Return
+            End If
             Dim snapshot As List(Of OperationSnapshot) =
                 SchedulerStageDiagnostics.BuildOrderOperationSnapshot(preactor, _schedulerDebug)
             SchedulerStageDiagnostics.DiagnoseWip(snapshot, _schedulerDebug)

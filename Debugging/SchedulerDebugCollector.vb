@@ -3,6 +3,7 @@ Option Explicit On
 
 Imports System
 Imports System.Collections.Generic
+Imports System.Configuration
 Imports System.IO
 Imports Preactor
 
@@ -24,11 +25,38 @@ Public Class SchedulerDebugCollector
     Public Sub New()
         ExportedAt = DateTime.Now
         RunId = Guid.NewGuid().ToString("N")
-        Enabled = True
+        Enabled = IsEnabledByConfiguration()
         ExportFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
                                     "GN_Opcenter_Debug",
                                     ExportedAt.ToString("yyyy-MM-dd_HHmmss"))
     End Sub
+
+    Public Shared Function IsEnabledByConfiguration() As Boolean
+        Dim configuredValue As String = ""
+
+        Try
+            configuredValue = ConfigurationManager.AppSettings("SchedulerDebugEnabled")
+        Catch
+            configuredValue = ""
+        End Try
+
+        If String.IsNullOrWhiteSpace(configuredValue) Then
+            configuredValue = Environment.GetEnvironmentVariable("GN_SCHEDULER_DEBUG")
+        End If
+
+        Return IsTrue(configuredValue)
+    End Function
+
+    Private Shared Function IsTrue(value As String) As Boolean
+        If String.IsNullOrWhiteSpace(value) Then Return False
+
+        Select Case value.Trim().ToUpperInvariant()
+            Case "1", "TRUE", "YES", "Y", "ON"
+                Return True
+            Case Else
+                Return False
+        End Select
+    End Function
 
     Public Function NextAttemptNo() As Integer
         _attemptNo += 1
