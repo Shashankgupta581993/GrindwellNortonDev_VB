@@ -632,6 +632,8 @@ Public Class AlgoSeq4
         'Dim currentDate As New System.DateTime(2025, 8, 1, 0, 0, 0)
         Dim currentDate As DateTime = planningboard.TerminatorTime
         routingdt = readOrderTable(preactor)
+        Dim operationRows As Dictionary(Of Integer, DataRow) =
+            SharedHelpers.BuildOperationRowIndex(routingdt)
         Dim pressingQueue As List(Of Integer) = BuildPressing200Queue(routingdt, currentDate)
         CreateRankedOperationQueue(preactor, planningboard, ordersTable, "JobsQueue", pressingQueue)
 
@@ -645,7 +647,23 @@ Public Class AlgoSeq4
             ' Inner loop: schedule this operation and then walk to subsequent operations
             ' (your "family" / routing chain) using GetNextOperation.
             While (opRec > 0)
-                If preactor.ReadFieldInt(ordersTable, opNoField, opRec) >= 200 Then Exit While
+                Dim opNo As Integer = preactor.ReadFieldInt(ordersTable, opNoField, opRec)
+                If opNo >= 200 Then Exit While
+
+                If SharedHelpers.IsCompletedOrActualizedOp(operationRows, opRec) Then
+                    Debug.WriteLine("MixingSkipCompletedActualized | OpRec=" &
+                                    opRec.ToString(CultureInfo.InvariantCulture) &
+                                    " | OpNo=" &
+                                    opNo.ToString(CultureInfo.InvariantCulture))
+                    opRec = planningboard.GetNextOperation(opRec, 1)
+                    Continue While
+                End If
+
+                If planningboard.IsOperationScheduled(opRec) Then
+                    opRec = planningboard.GetNextOperation(opRec, 1)
+                    Continue While
+                End If
+
                 ' Find all valid alternate resources for this operation.
                 ResRecs = planningboard.FindResources(opRec)
 
