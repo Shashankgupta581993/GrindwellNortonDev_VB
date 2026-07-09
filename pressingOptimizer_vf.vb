@@ -15,6 +15,9 @@
 
     ' Candidate structure used for sorting/batching
     Private Class Candidate
+        Public Property RecordNo As Integer
+        Public Property OrderNo As String
+        Public Property OperationNumber As Integer
         Public Property ParentRecord As Integer          ' queue key to return
         Public Property ResourceGroup As String          ' resource group key
         Public Property Earliest As DateTime             ' Pressing earliest start (date-only)
@@ -29,6 +32,10 @@
 
         Public Property PrevOpIsScheduled As Boolean     ' flag from prev_op_is_scheduled
         Public Property PrevOpPriority As Integer        ' 0 if PrevOpIsScheduled, 1 otherwise
+        Public Property WipScore As Integer
+        Public Property WipReadyTime As DateTime
+        Public Property WipStatus As String
+        Public Property WipRejectReason As String
     End Class
 
     ' ----------------------
@@ -37,7 +44,8 @@
     Public Function BuildPressing200Queue(dt As DataTable,
                                       currentDate As DateTime,
                                       Optional approachingDays As Integer = 2,
-                                          Optional prioritizePrevOpFirst As Boolean = False) As List(Of Integer)
+                                          Optional prioritizePrevOpFirst As Boolean = False,
+                                          Optional debug As SchedulerDebugCollector = Nothing) As List(Of Integer)
 
         If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
 
@@ -46,8 +54,11 @@
         SharedHelpers.RequireColumn(dt, "parent_record")
         SharedHelpers.RequireColumn(dt, "is_scheduled")
         SharedHelpers.RequireColumn(dt, "prev_op_is_scheduled")
+        SharedHelpers.RequireColumn(dt, "wip_score")
+        SharedHelpers.RequireColumn(dt, "wip_ready_time")
+        SharedHelpers.RequireColumn(dt, "wip_status")
+        SharedHelpers.RequireColumn(dt, "wip_reject_reason")
         SharedHelpers.RequireColumn(dt, "Resource Group")
-
         SharedHelpers.RequireColumn(dt, "Operation Number")
         SharedHelpers.RequireColumn(dt, "Pressing earliest start")
         SharedHelpers.RequireColumn(dt, "Pressing Due date")
@@ -110,12 +121,24 @@
             Dim cycleRank As Integer = GetCycleRank(cycleType)
 
             ' 9) Previous operation scheduled? (WIP reduction signal)
-            Dim prevOpIsScheduled As Boolean = SharedHelpers.SafeBool(r("prev_op_is_scheduled"))
+            'Dim prevOpIsScheduled As Boolean = SharedHelpers.SafeBool(r("prev_op_is_scheduled"))
+            'Dim prevOpPriority As Integer = If(prevOpIsScheduled, 0, 1)
+            Dim wipStatus As String = SharedHelpers.SafeStr(r("wip_status")).Trim()
+            If Not wipStatus.Equals("Candidate", StringComparison.OrdinalIgnoreCase) Then Continue For
+
+            Dim prevOpIsScheduled As Boolean = SharedHelpers.SafeBool(r("wip_prev_op_scheduled"))
             Dim prevOpPriority As Integer = If(prevOpIsScheduled, 0, 1)
+
+            Dim wipScore As Integer = SharedHelpers.SafeInt(r("wip_score"))
+            Dim wipReadyTime As DateTime = SharedHelpers.SafeDate(r("wip_ready_time"))
+            Dim wipRejectReason As String = SharedHelpers.SafeStr(r("wip_reject_reason"))
             ' 0 = “prev op is already scheduled” → better
             ' 1 = “prev op not scheduled / unknown” → slightly worse
 
             candidates.Add(New Candidate With {
+            .RecordNo = SharedHelpers.SafeInt(r("OrdersID")),
+            .OrderNo = SharedHelpers.SafeStr(r("Order No")).Trim(),
+            .OperationNumber = opNo,
             .ParentRecord = parentRec,
             .ResourceGroup = resourceGroup,
             .Earliest = earliest,
@@ -128,7 +151,11 @@
             .MissingEarliest = missingEarliest,
             .MissingDue = missingDue,
             .PrevOpIsScheduled = prevOpIsScheduled,
-            .PrevOpPriority = prevOpPriority
+            .PrevOpPriority = prevOpPriority,
+            .WipScore = wipScore,
+            .WipReadyTime = wipReadyTime,
+            .WipStatus = wipStatus,
+            .WipRejectReason = wipRejectReason
         })
         Next
 
@@ -156,14 +183,22 @@
 
         If prioritizePrevOpFirst Then
             ' WIP-first strategy
-            sorted = candidates.OrderBy(Function(c) c.PrevOpPriority) _
-                           .ThenBy(Function(c) c.Tier) _
-                           .ThenBy(Function(c) If(c.MissingDue, DateTime.MaxValue, c.Due)) _
-                           .ThenBy(Function(c) If(c.MissingEarliest, DateTime.MaxValue, c.Earliest)) _
-                           .ThenByDescending(Function(c) c.CycleRank) _
-                           .ThenBy(Function(c) c.TypeKey) _
-                           .ThenBy(Function(c) c.ParentRecord) _
-                           .ToList()
+            'sorted = candidates.OrderBy(Function(c) c.PrevOpPriority) _
+            '               .ThenBy(Function(c) c.Tier) _
+            '               .ThenBy(Function(c) If(c.MissingDue, DateTime.MaxValue, c.Due)) _
+            '               .ThenBy(Function(c) If(c.MissingEarliest, DateTime.MaxValue, c.Earliest)) _
+            '               .ThenByDescending(Function(c) c.CycleRank) _
+            '               .ThenBy(Function(c) c.TypeKey) _
+            '               .ThenBy(Function(c) c.ParentRecord) _
+            '               .ToList()
+            sorted = candidates.OrderByDescending(Function(c) c.WipScore) _
+                   .ThenBy(Function(c) c.Tier) _
+                   .ThenBy(Function(c) If(c.MissingDue, DateTime.MaxValue, c.Due)) _
+                   .ThenBy(Function(c) If(c.MissingEarliest, DateTime.MaxValue, c.Earliest)) _
+                   .ThenByDescending(Function(c) c.CycleRank) _
+                   .ThenBy(Function(c) c.TypeKey) _
+                   .ThenBy(Function(c) c.ParentRecord) _
+                   .ToList()
         Else
             ' Due-date-first strategy (what we designed earlier)
             sorted = candidates.OrderBy(Function(c) c.Tier) _
@@ -179,6 +214,29 @@
 
         ' ---- Greedy batching: TypeKey clustering at RESOURCE GROUP level ----
         Dim batched As List(Of Candidate) = GreedyTypeBatchingWithinTier(sorted, lookahead:=50)
+
+        If debug IsNot Nothing AndAlso debug.Enabled Then
+            Dim beforeCount As Integer = dt.AsEnumerable().Count(Function(r) SharedHelpers.SafeInt(r("Operation Number")) = 200)
+            For i As Integer = 0 To batched.Count - 1
+                Dim c As Candidate = batched(i)
+                debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+                    .OptimizerName = "pressingOptimizer_vf",
+                    .Stage = "Pressing",
+                    .StepName = "FinalRankedQueue",
+                    .OrderNo = c.OrderNo,
+                    .ParentRecordNo = c.ParentRecord,
+                    .RecordNo = c.RecordNo,
+                    .OperationNumber = c.OperationNumber,
+                    .BeforeCount = beforeCount,
+                    .AfterCount = batched.Count,
+                    .Included = True,
+                    .ReasonCode = SchedulerDebugReasonCodes.OK_INCLUDED,
+                    .ReasonDetail = "Included in final pressing parent queue.",
+                    .RankScore = c.WipScore,
+                    .RankBreakdown = "Tier=" & c.Tier.ToString() & ";CycleRank=" & c.CycleRank.ToString() & ";Type=" & c.TypeKey
+                })
+            Next
+        End If
 
         ' ---- Output: return parent_record list (distinct to be safe) ----
         Return batched.Select(Function(c) c.ParentRecord).Distinct().ToList()

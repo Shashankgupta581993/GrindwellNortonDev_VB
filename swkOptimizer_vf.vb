@@ -61,6 +61,9 @@ Public Class swkOptimizer_vf
         Public Property LoadMins As Integer
 
         Public Property PrevOpIsScheduled As Boolean
+
+        Public Property WipScore As Integer
+        Public Property WipRejectReason As String
     End Class
 
     Private Class SwkBatchCandidate
@@ -79,11 +82,13 @@ Public Class swkOptimizer_vf
                                  Optional dailyBatchLimit As Integer = 2,
                                  Optional batchStartDelayMins As Integer = 60,
                                  Optional allowUnderfilledTail As Boolean = True,
-                                 Optional swkResourceName As String = "SWBKILN") As SwkBatchPlan
+                                 Optional swkResourceName As String = "SWBKILN",
+                                 Optional debug As SchedulerDebugCollector = Nothing) As SwkBatchPlan
 
         ValidateInputs(dt, minTonnage, maxTonnage)
 
-        Dim candidates As List(Of SwkCandidate) = BuildCandidates(dt, maxTonnage)
+        Dim candidates As List(Of SwkCandidate) =
+            BuildCandidates(dt, maxTonnage, debug)
 
         Dim plan As New SwkBatchPlan()
         If candidates.Count = 0 Then Return plan
@@ -103,10 +108,16 @@ Public Class swkOptimizer_vf
 
         While unassigned.Count > 0
 
-            Dim readyPool As List(Of SwkCandidate) = GetReadyPool(unassigned, swkAvail)
+            Dim earliestReady As DateTime
+            Dim nextReadyAfterAvailability As DateTime
+            Dim readyPool As List(Of SwkCandidate) =
+                GetReadyPool(unassigned,
+                             swkAvail,
+                             earliestReady,
+                             nextReadyAfterAvailability)
 
             If readyPool.Count = 0 Then
-                Dim nextReady As DateTime = GetNextReadyTime(unassigned)
+                Dim nextReady As DateTime = earliestReady
                 If nextReady = DateTime.MaxValue Then Exit While
                 swkAvail = If(nextReady > swkAvail, nextReady, swkAvail)
                 Continue While
@@ -124,7 +135,7 @@ Public Class swkOptimizer_vf
             End If
 
             If batch.TotalTonnage < minTonnage Then
-                Dim futureReady As DateTime = GetNextReadyTimeAfter(unassigned, swkAvail)
+                Dim futureReady As DateTime = nextReadyAfterAvailability
 
                 If futureReady <> DateTime.MinValue AndAlso Not allowUnderfilledTail Then
                     swkAvail = futureReady
@@ -176,87 +187,174 @@ Public Class swkOptimizer_vf
 
     End Function
 
-    Private Function BuildCandidates(dt As DataTable, maxTonnage As Double) As List(Of SwkCandidate)
+    Private Function BuildCandidates(dt As DataTable,
+                                     maxTonnage As Double,
+                                     Optional debug As SchedulerDebugCollector = Nothing) As List(Of SwkCandidate)
 
         Dim list As New List(Of SwkCandidate)()
 
-        Dim lastPreOpNoByOrder As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+        'Dim lastPreOpNoByOrder As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
 
-        For Each r As DataRow In dt.Rows
-            Dim orderNo As String = SharedHelpers.SafeStr(r(COL_ORDERNO)).Trim()
-            If orderNo = "" Then Continue For
+        'For Each r As DataRow In dt.Rows
+        '    Dim orderNo As String = SharedHelpers.SafeStr(r(COL_ORDERNO)).Trim()
+        '    If orderNo = "" Then Continue For
 
-            Dim opNo As Integer = SharedHelpers.SafeInt(r(COL_OPNO))
-            If opNo <= 0 OrElse opNo >= 290 Then Continue For
+        '    Dim opNo As Integer = SharedHelpers.SafeInt(r(COL_OPNO))
+        '    If opNo <= 0 OrElse opNo >= 290 Then Continue For
 
-            Dim current As Integer = 0
-            If Not lastPreOpNoByOrder.TryGetValue(orderNo, current) OrElse opNo > current Then
-                lastPreOpNoByOrder(orderNo) = opNo
-            End If
-        Next
+        '    Dim current As Integer = 0
+        '    If Not lastPreOpNoByOrder.TryGetValue(orderNo, current) OrElse opNo > current Then
+        '        lastPreOpNoByOrder(orderNo) = opNo
+        '    End If
+        'Next
 
-        Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+        'Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
 
-        For Each r As DataRow In dt.Rows
-            Dim orderNo As String = SharedHelpers.SafeStr(r(COL_ORDERNO)).Trim()
-            If orderNo = "" Then Continue For
+        'For Each r As DataRow In dt.Rows
+        '    Dim orderNo As String = SharedHelpers.SafeStr(r(COL_ORDERNO)).Trim()
+        '    If orderNo = "" Then Continue For
 
-            Dim lastOpNo As Integer = 0
-            If Not lastPreOpNoByOrder.TryGetValue(orderNo, lastOpNo) Then Continue For
+        '    Dim lastOpNo As Integer = 0
+        '    If Not lastPreOpNoByOrder.TryGetValue(orderNo, lastOpNo) Then Continue For
 
-            Dim opNo As Integer = SharedHelpers.SafeInt(r(COL_OPNO))
-            If opNo <> lastOpNo Then Continue For
+        '    Dim opNo As Integer = SharedHelpers.SafeInt(r(COL_OPNO))
+        '    If opNo <> lastOpNo Then Continue For
 
-            If Not SharedHelpers.SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
+        '    If Not SharedHelpers.SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
 
-            Dim endT As DateTime = SharedHelpers.SafeDate(r(COL_SCHED_END))
-            If endT = DateTime.MinValue Then Continue For
+        '    Dim endT As DateTime = SharedHelpers.SafeDate(r(COL_SCHED_END))
+        '    If endT = DateTime.MinValue Then Continue For
 
-            If Not readyByOrder.ContainsKey(orderNo) OrElse endT > readyByOrder(orderNo) Then
-                readyByOrder(orderNo) = endT
-            End If
-        Next
+        '    If Not readyByOrder.ContainsKey(orderNo) OrElse endT > readyByOrder(orderNo) Then
+        '        readyByOrder(orderNo) = endT
+        '    End If
+        'Next
+        Dim readinessByOrder As Dictionary(Of String, SharedHelpers.FiringReadinessInfo) =
+    SharedHelpers.BuildFiringReadinessByOrder(dt)
 
         Dim loadingMinsByOrder As Dictionary(Of String, Integer) = BuildLoadingMinsByOrder(dt)
         Dim hasPrevCol As Boolean = dt.Columns.Contains(COL_PREVOP_IS_SCH)
+        Dim beforeCount As Integer = 0
+        If debug IsNot Nothing AndAlso debug.Enabled Then
+            beforeCount = dt.AsEnumerable().Count(
+                Function(row) SharedHelpers.SafeInt(row(COL_OPNO)) = 300)
+        End If
 
         For Each r As DataRow In dt.Rows
-
-            Dim kilnType As Integer = SharedHelpers.SafeInt(r(COL_KILNTYPE))
-            If kilnType <> SWK_KILN_TYPE Then Continue For
 
             Dim opNo As Integer = SharedHelpers.SafeInt(r(COL_OPNO))
             If opNo <> 300 Then Continue For
 
-            If SharedHelpers.SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
+            Dim kilnType As Integer = SharedHelpers.SafeInt(r(COL_KILNTYPE))
+            If kilnType <> SWK_KILN_TYPE Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.FIRING_KILN_TYPE_UNSUPPORTED,
+                                       "Expected SWK kiln type 3; actual value='" &
+                                       SharedHelpers.SafeStr(r(COL_KILNTYPE)).Trim() & "'.")
+                Continue For
+            End If
+
+            If SharedHelpers.SafeBool(r(COL_IS_SCHEDULED)) Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.WIP_CURRENT_OPERATION_ALREADY_SCHEDULED,
+                                       "Firing operation 300 is already scheduled.")
+                Continue For
+            End If
+
+            Dim wipStatus As String = SharedHelpers.SafeStr(r("wip_status")).Trim()
+            If Not wipStatus.Equals("Candidate", StringComparison.OrdinalIgnoreCase) Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.WIP_STATUS_NOT_CANDIDATE,
+                                       "Expected wip_status='Candidate'; actual value='" &
+                                       wipStatus & "'.")
+                Continue For
+            End If
+
+            Dim wipScore As Integer = SharedHelpers.SafeInt(r("wip_score"))
+            Dim wipRejectReason As String = SharedHelpers.SafeStr(r("wip_reject_reason"))
 
             Dim cycle As String = NormalizeCycle(SharedHelpers.SafeStr(r(COL_CYCLE)))
-            If cycle = SWK_FUTURE_FILLER_CYCLE Then Continue For
-            If cycle <> SWK_ACTIVE_CYCLE Then Continue For
+            If cycle = SWK_FUTURE_FILLER_CYCLE OrElse cycle <> SWK_ACTIVE_CYCLE Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.FIRING_CYCLE_NOT_IN_MATRIX,
+                                       "Expected SWK cycle '" & SWK_ACTIVE_CYCLE &
+                                       "'; actual normalized value='" & cycle & "'.")
+                Continue For
+            End If
 
             Dim orderNo As String = SharedHelpers.SafeStr(r(COL_ORDERNO)).Trim()
-            If orderNo = "" Then Continue For
+            If orderNo = "" Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.DATA_MISSING_ORDER_NO,
+                                       "Order No is blank.")
+                Continue For
+            End If
 
-            Dim ready As DateTime
-            If Not readyByOrder.TryGetValue(orderNo, ready) Then Continue For
+            'Dim ready As DateTime
+            'If Not readyByOrder.TryGetValue(orderNo, ready) Then Continue For
+            Dim readiness As SharedHelpers.FiringReadinessInfo = Nothing
+
+            If Not readinessByOrder.TryGetValue(orderNo, readiness) Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.FIRING_PREV_OP_NOT_READY,
+                                       "No firing readiness was produced for this order.")
+                Continue For
+            End If
+
+            Dim ready As DateTime = readiness.ReadyTime
+            wipScore = Math.Max(wipScore, readiness.WipScore)
 
             Dim due As DateTime = SharedHelpers.ParseDueAsEndOfDay(r(COL_FIRING_DUE))
-            If due = DateTime.MinValue Then Continue For
+            If due = DateTime.MinValue Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.DATA_INVALID_DATE,
+                                       "Invalid firing due date raw value='" &
+                                       SharedHelpers.SafeStr(r(COL_FIRING_DUE)).Trim() & "'.")
+                Continue For
+            End If
 
             Dim tonnage As Double = SharedHelpers.SafeDbl(r(COL_TONNAGE))
-            If tonnage <= 0 Then Continue For
-            If tonnage > maxTonnage + 0.0000001 Then Continue For
+            If tonnage <= 0 Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.SWK_INVALID_TONNAGE,
+                                       "Tonnage must be positive; actual value='" &
+                                       SharedHelpers.SafeStr(r(COL_TONNAGE)).Trim() & "'.")
+                Continue For
+            End If
+            If tonnage > maxTonnage + 0.0000001 Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.SWK_TONNAGE_OVER_MAX,
+                                       "Tonnage=" & tonnage.ToString(CultureInfo.InvariantCulture) &
+                                       " exceeds maxTonnage=" &
+                                       maxTonnage.ToString(CultureInfo.InvariantCulture) & ".")
+                Continue For
+            End If
 
             Dim fireMins As Integer = CInt(Math.Truncate(SharedHelpers.SafeDbl(r(COL_BATCHTIME))))
-            If fireMins <= 0 Then Continue For
+            If fireMins <= 0 Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.DATA_MISSING_PROCESS_TIME,
+                                       "Batch Time must be positive; actual value='" &
+                                       SharedHelpers.SafeStr(r(COL_BATCHTIME)).Trim() & "'.")
+                Continue For
+            End If
 
             Dim loadMins As Integer = 0
             If Not loadingMinsByOrder.TryGetValue(orderNo, loadMins) Then
                 loadMins = 0
             End If
 
+            If readiness.LoadingAlreadyReleased Then
+                loadMins = 0
+            End If
+
             Dim firingOpRec As Integer = SharedHelpers.SafeInt(r(COL_OPREC))
-            If firingOpRec <= 0 Then Continue For
+            If firingOpRec <= 0 Then
+                TraceCandidateDecision(debug, r, beforeCount, list.Count, False,
+                                       SchedulerDebugReasonCodes.DATA_MISSING_OPERATION,
+                                       "OrdersID for firing operation 300 is invalid.")
+                Continue For
+            End If
 
             Dim prevScheduled As Boolean = False
             If hasPrevCol Then prevScheduled = SharedHelpers.SafeBool(r(COL_PREVOP_IS_SCH))
@@ -270,8 +368,18 @@ Public Class swkOptimizer_vf
                 .Tonnage = tonnage,
                 .FireMins = fireMins,
                 .LoadMins = loadMins,
-                .PrevOpIsScheduled = prevScheduled
-            })
+                .PrevOpIsScheduled = prevScheduled,
+                .WipScore = wipScore,
+                .WipRejectReason = wipRejectReason})
+
+            TraceCandidateDecision(debug, r, beforeCount, list.Count, True,
+                                   SchedulerDebugReasonCodes.OK_INCLUDED,
+                                   "Included. Due=" &
+                                   due.ToString("yyyy-MM-dd HH:mm:ss.fffffff",
+                                                CultureInfo.InvariantCulture) &
+                                   "; Ready=" &
+                                   ready.ToString("yyyy-MM-dd HH:mm:ss",
+                                                  CultureInfo.InvariantCulture) & ".")
 
         Next
 
@@ -391,9 +499,12 @@ Public Class swkOptimizer_vf
         Dim list As New List(Of SwkCandidate)(input)
 
         list.Sort(Function(a, b)
-                      If a.PrevOpIsScheduled <> b.PrevOpIsScheduled Then
-                          If a.PrevOpIsScheduled Then Return -1 Else Return 1
-                      End If
+                      'If a.PrevOpIsScheduled <> b.PrevOpIsScheduled Then
+                      '    If a.PrevOpIsScheduled Then Return -1 Else Return 1
+                      'End If
+
+                      Dim w As Integer = b.WipScore.CompareTo(a.WipScore)
+                      If w <> 0 Then Return w
 
                       Dim c As Integer = a.DueTime.CompareTo(b.DueTime)
                       If c <> 0 Then Return c
@@ -415,48 +526,56 @@ Public Class swkOptimizer_vf
     End Function
 
     Private Function GetReadyPool(unassigned As Dictionary(Of Integer, SwkCandidate),
-                                  t As DateTime) As List(Of SwkCandidate)
+                                  t As DateTime,
+                                  ByRef earliestReady As DateTime,
+                                  ByRef nextReadyAfter As DateTime) As List(Of SwkCandidate)
 
         Dim pool As New List(Of SwkCandidate)()
+        earliestReady = DateTime.MaxValue
+        nextReadyAfter = DateTime.MinValue
 
         For Each kvp In unassigned
-            If kvp.Value.ReadyTime <= t Then pool.Add(kvp.Value)
+            Dim candidate As SwkCandidate = kvp.Value
+            Dim readyTime As DateTime = candidate.ReadyTime
+
+            If readyTime < earliestReady Then earliestReady = readyTime
+
+            If readyTime <= t Then
+                pool.Add(candidate)
+            ElseIf readyTime < DateTime.MaxValue AndAlso
+                   (nextReadyAfter = DateTime.MinValue OrElse readyTime < nextReadyAfter) Then
+                nextReadyAfter = readyTime
+            End If
         Next
 
         Return pool
 
     End Function
 
-    Private Function GetNextReadyTime(unassigned As Dictionary(Of Integer, SwkCandidate)) As DateTime
+    Private Sub TraceCandidateDecision(debug As SchedulerDebugCollector,
+                                       row As DataRow,
+                                       beforeCount As Integer,
+                                       afterCount As Integer,
+                                       included As Boolean,
+                                       reasonCode As String,
+                                       reasonDetail As String)
+        If debug Is Nothing OrElse Not debug.Enabled Then Return
 
-        Dim best As DateTime = DateTime.MaxValue
-
-        For Each kvp In unassigned
-            If kvp.Value.ReadyTime < best Then best = kvp.Value.ReadyTime
-        Next
-
-        Return best
-
-    End Function
-
-    Private Function GetNextReadyTimeAfter(unassigned As Dictionary(Of Integer, SwkCandidate),
-                                           t As DateTime) As DateTime
-
-        Dim best As DateTime = DateTime.MaxValue
-        Dim found As Boolean = False
-
-        For Each kvp In unassigned
-            Dim rt As DateTime = kvp.Value.ReadyTime
-            If rt > t AndAlso rt < best Then
-                best = rt
-                found = True
-            End If
-        Next
-
-        If Not found Then Return DateTime.MinValue
-        Return best
-
-    End Function
+        debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+            .OptimizerName = "swkOptimizer_vf",
+            .Stage = "SWK",
+            .StepName = "CandidateFilter",
+            .OrderNo = SharedHelpers.SafeStr(row(COL_ORDERNO)).Trim(),
+            .ParentRecordNo = SharedHelpers.SafeInt(row(COL_PARENT)),
+            .RecordNo = SharedHelpers.SafeInt(row(COL_OPREC)),
+            .OperationNumber = SharedHelpers.SafeInt(row(COL_OPNO)),
+            .BeforeCount = beforeCount,
+            .AfterCount = afterCount,
+            .Included = included,
+            .ReasonCode = reasonCode,
+            .ReasonDetail = reasonDetail
+        })
+    End Sub
 
     Private Function NormalizeCycle(value As String) As String
         If value Is Nothing Then Return ""

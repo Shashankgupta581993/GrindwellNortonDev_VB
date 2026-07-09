@@ -76,7 +76,8 @@ Public Class firingOptimizer_vf
                                            Optional allowUnderfilledTail As Boolean = True,
                                            Optional batchStartDelayMins As Integer = 0,
                                            Optional maxBatchesPerDayGlobal As Integer = 2,
-                                           Optional initialKilnAvailability As Dictionary(Of String, DateTime) = Nothing) As FiringBatchPlan
+                                           Optional initialKilnAvailability As Dictionary(Of String, DateTime) = Nothing,
+                                           Optional debug As SchedulerDebugCollector = Nothing) As FiringBatchPlan
 
 
         ValidateInputs(dt, minOcc, maxOcc)
@@ -89,6 +90,23 @@ Public Class firingOptimizer_vf
 
         ' Build candidates per order (Batch-only + op300 exists + readiness computed from <290)
         Dim candidates As List(Of OrderCandidate) = BuildCandidates(dt)
+        If debug IsNot Nothing AndAlso debug.Enabled Then
+            Dim candidateIds As New HashSet(Of Integer)(candidates.Select(Function(x) x.FiringOpRec))
+            Dim beforeCount As Integer = dt.AsEnumerable().Count(Function(r) SafeInt(r(COL_OPNO)) = 300 AndAlso SafeInt(r(COL_KILNTYPE)) = 1)
+            For Each r As DataRow In dt.Rows
+                If SafeInt(r(COL_OPNO)) <> 300 OrElse SafeInt(r(COL_KILNTYPE)) <> 1 Then Continue For
+                Dim recNo As Integer = SafeInt(r(COL_OPREC))
+                Dim included As Boolean = candidateIds.Contains(recNo)
+                debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+                    .OptimizerName = "firingOptimizer_vf", .Stage = "BatchFiring", .StepName = "FinalCandidateSet",
+                    .OrderNo = SafeStr(r(COL_ORDERNO)).Trim(), .ParentRecordNo = SafeInt(r("parent_record")),
+                    .RecordNo = recNo, .OperationNumber = 300, .BeforeCount = beforeCount, .AfterCount = candidates.Count,
+                    .Included = included,
+                    .ReasonCode = If(included, SchedulerDebugReasonCodes.OK_INCLUDED, SchedulerDebugReasonCodes.FIRING_NO_VALID_BATCH_COMBINATION),
+                    .ReasonDetail = If(included, "Included after batch firing filters.", "Excluded by one or more batch firing candidate filters.")
+                })
+            Next
+        End If
 
         ' Initialize kiln availability
         'Dim kilnAvail As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
@@ -128,23 +146,40 @@ Public Class firingOptimizer_vf
             Dim nextKiln As String = GetEarliestKiln(kilnAvail)
             Dim t As DateTime = kilnAvail(nextKiln)
 
-            ' available pool = orders ready by time t
-            Dim availPool As List(Of OrderCandidate) = GetReadyPool(unassigned, t)
+            ' Build the ready pool and both readiness boundaries in one pass.
+            Dim earliestReady As DateTime
+            Dim nextReadyAfterT As DateTime
+            Dim availPool As List(Of OrderCandidate) =
+                GetReadyPool(unassigned, t, earliestReady, nextReadyAfterT)
 
             If availPool.Count = 0 Then
                 ' advance to next readiness (don’t idle kiln)
-                Dim nextReady As DateTime = GetNextReadyTime(unassigned)
-                kilnAvail(nextKiln) = If(nextReady > kilnAvail(nextKiln), nextReady, kilnAvail(nextKiln))
+                kilnAvail(nextKiln) =
+                    If(earliestReady > kilnAvail(nextKiln),
+                       earliestReady,
+                       kilnAvail(nextKiln))
                 Continue While
             End If
 
+            Dim availPoolByCycle As Dictionary(Of String, List(Of OrderCandidate)) =
+                BuildPoolByCycle(availPool)
+
             ' 1) try pure batches (priority 150>102>65)
-            Dim pureCands As List(Of BatchCandidate) = BuildPureBatchCandidates(availPool, kilnSupport, kilnAvail, minOcc, maxOcc)
+            Dim pureCands As List(Of BatchCandidate) =
+                BuildPureBatchCandidates(availPoolByCycle,
+                                         kilnSupport,
+                                         kilnAvail,
+                                         minOcc,
+                                         maxOcc)
 
             ' 2) only if no pure candidate exists, allow mixed candidates
             Dim mixedCands As List(Of BatchCandidate) = New List(Of BatchCandidate)()
             If pureCands.Count = 0 Then
-                mixedCands = BuildMixedBatchCandidates(availPool, kilnSupport, kilnAvail, minOcc, maxOcc)
+                mixedCands = BuildMixedBatchCandidates(availPoolByCycle,
+                                                       kilnSupport,
+                                                       kilnAvail,
+                                                       minOcc,
+                                                       maxOcc)
             End If
 
             Dim allCands As New List(Of BatchCandidate)()
@@ -153,11 +188,14 @@ Public Class firingOptimizer_vf
 
             If allCands.Count = 0 Then
                 ' can't form legal minOcc batch right now -> wait for more orders
-                Dim nextReady As DateTime = GetNextReadyTimeAfter(unassigned, t)
+                Dim nextReady As DateTime = nextReadyAfterT
                 If nextReady = DateTime.MinValue Then
                     ' no future readiness: tail situation
                     If allowUnderfilledTail Then
-                        allCands = BuildUnderfilledLegalCandidates(availPool, kilnSupport, kilnAvail, maxOcc)
+                        allCands = BuildUnderfilledLegalCandidates(availPoolByCycle,
+                                                                  kilnSupport,
+                                                                  kilnAvail,
+                                                                  maxOcc)
                         If allCands.Count = 0 Then Exit While
                     Else
                         Exit While
@@ -209,13 +247,6 @@ Public Class firingOptimizer_vf
             kilnAvail(best.KilnName) = best.BatchEnd
 
             ' Remove assigned orders from the pool
-            For Each o In best.Orders
-                unassigned.Remove(o.FiringOpRec)
-            Next
-
-
-            ' Mark assigned + update kiln availability
-            kilnAvail(best.KilnName) = best.BatchEnd
             For Each o In best.Orders
                 unassigned.Remove(o.FiringOpRec)
             Next
@@ -335,54 +366,55 @@ Public Class firingOptimizer_vf
         ' STEP 1: For each order, find the last operation number BEFORE 290
         '         (this is the "valid pre-firing op" for that order)
         ' -----------------------------------------------------------------
-        Dim lastPreOpNoByOrder As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+        'Dim lastPreOpNoByOrder As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
 
-        For Each r As DataRow In dt.Rows
-            Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
-            If orderNo = "" Then Continue For
+        'For Each r As DataRow In dt.Rows
+        '    Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
+        '    If orderNo = "" Then Continue For
 
-            Dim opNo As Integer = SafeInt(r(COL_OPNO))
-            ' Last pre-firing op is the maximum opNo where 0 < opNo < 290
-            If opNo <= 0 OrElse opNo >= 290 Then Continue For
+        '    Dim opNo As Integer = SafeInt(r(COL_OPNO))
+        '    ' Last pre-firing op is the maximum opNo where 0 < opNo < 290
+        '    If opNo <= 0 OrElse opNo >= 290 Then Continue For
 
-            Dim current As Integer
-            If Not lastPreOpNoByOrder.TryGetValue(orderNo, current) OrElse opNo > current Then
-                lastPreOpNoByOrder(orderNo) = opNo
-            End If
-        Next
+        '    Dim current As Integer
+        '    If Not lastPreOpNoByOrder.TryGetValue(orderNo, current) OrElse opNo > current Then
+        '        lastPreOpNoByOrder(orderNo) = opNo
+        '    End If
+        'Next
 
-        ' -----------------------------------------------------------------
-        ' STEP 2: For each order, get scheduled_end_time of that last pre-290 op
-        '         Only if that specific op is scheduled do we treat the order
-        '         as having a valid ReadyTime for firing.
-        ' -----------------------------------------------------------------
-        Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+        '' -----------------------------------------------------------------
+        '' STEP 2: For each order, get scheduled_end_time of that last pre-290 op
+        ''         Only if that specific op is scheduled do we treat the order
+        ''         as having a valid ReadyTime for firing.
+        '' -----------------------------------------------------------------
+        'Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
 
-        For Each r As DataRow In dt.Rows
-            Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
-            If orderNo = "" Then Continue For
+        'For Each r As DataRow In dt.Rows
+        '    Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
+        '    If orderNo = "" Then Continue For
 
-            Dim lastOpNo As Integer
-            If Not lastPreOpNoByOrder.TryGetValue(orderNo, lastOpNo) Then Continue For
+        '    Dim lastOpNo As Integer
+        '    If Not lastPreOpNoByOrder.TryGetValue(orderNo, lastOpNo) Then Continue For
 
-            Dim opNo As Integer = SafeInt(r(COL_OPNO))
-            If opNo <> lastOpNo Then Continue For
+        '    Dim opNo As Integer = SafeInt(r(COL_OPNO))
+        '    If opNo <> lastOpNo Then Continue For
 
-            ' This is the "last pre-firing" op row for this order – it must be scheduled
-            If Not SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
+        '    ' This is the "last pre-firing" op row for this order – it must be scheduled
+        '    If Not SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
 
-            Dim endT As DateTime = SafeDate(r(COL_SCHED_END))
-            If endT = DateTime.MinValue Then Continue For
+        '    Dim endT As DateTime = SafeDate(r(COL_SCHED_END))
+        '    If endT = DateTime.MinValue Then Continue For
 
-            ' One per order; if somehow multiple, keep the latest
-            Dim existing As DateTime = DateTime.MinValue
-            If readyByOrder.TryGetValue(orderNo, existing) Then
-                If endT > existing Then readyByOrder(orderNo) = endT
-            Else
-                readyByOrder(orderNo) = endT
-            End If
-        Next
-
+        '    ' One per order; if somehow multiple, keep the latest
+        '    Dim existing As DateTime = DateTime.MinValue
+        '    If readyByOrder.TryGetValue(orderNo, existing) Then
+        '        If endT > existing Then readyByOrder(orderNo) = endT
+        '    Else
+        '        readyByOrder(orderNo) = endT
+        '    End If
+        'Next
+        Dim readinessByOrder As Dictionary(Of String, SharedHelpers.FiringReadinessInfo) =
+    SharedHelpers.BuildFiringReadinessByOrder(dt)
         ' -----------------------------------------------------------------
         ' STEP 3: Build firing candidates (op 300 on batch kilns) using
         '         last pre-290 op completion as ReadyTime.
@@ -403,15 +435,30 @@ Public Class firingOptimizer_vf
             Dim isScheduled As Boolean = SafeBool(r(COL_IS_SCHEDULED))
             If isScheduled Then Continue For
 
+            Dim wipStatus As String = SharedHelpers.SafeStr(r("wip_status")).Trim()
+            If Not wipStatus.Equals("Candidate", StringComparison.OrdinalIgnoreCase) Then Continue For
+
+            Dim wipScore As Integer = SharedHelpers.SafeInt(r("wip_score"))
+            Dim wipRejectReason As String = SharedHelpers.SafeStr(r("wip_reject_reason"))
+
             Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
             If orderNo = "" Then Continue For
 
             ' Require last pre-firing op to be scheduled → ReadyTime defined
-            Dim ready As DateTime
-            If Not readyByOrder.TryGetValue(orderNo, ready) Then
-                ' Sequence is incomplete – last pre-290 op not scheduled
+            'Dim ready As DateTime
+            'If Not readyByOrder.TryGetValue(orderNo, ready) Then
+            '    ' Sequence is incomplete – last pre-290 op not scheduled
+            '    Continue For
+            'End If
+
+            Dim readiness As SharedHelpers.FiringReadinessInfo = Nothing
+
+            If Not readinessByOrder.TryGetValue(orderNo, readiness) Then
                 Continue For
             End If
+
+            Dim ready As DateTime = readiness.ReadyTime
+            wipScore = Math.Max(wipScore, readiness.WipScore)
 
             Dim cycle As String = SafeStr(r(COL_CYCLE)).Trim()
             If Not IsKnownCycle(cycle) Then Continue For
@@ -422,12 +469,18 @@ Public Class firingOptimizer_vf
             Dim fireMins As Integer = CInt(Math.Truncate(SafeDbl(r(COL_BATCHTIME))))
             If fireMins <= 0 Then Continue For
 
-            Dim firingDue As DateTime = ParseDueAsEndOfDay(r(COL_FIRING_DUE))
+            Dim firingDue As DateTime = SharedHelpers.ParseDueAsEndOfDay(r(COL_FIRING_DUE))
             If firingDue = DateTime.MinValue Then Continue For
 
             Dim loadMins As Integer = 0
             If Not loadingMinsByOrder.TryGetValue(orderNo, loadMins) Then
                 Continue For
+            End If
+
+            ' If loading 290/291 is already completed/released,
+            ' do not add loading time again.
+            If readiness.LoadingAlreadyReleased Then
+                loadMins = 0
             End If
             'Dim loadMins As Integer = FindMaxLoadingMins(dt, orderNo)
             'If loadMins < 0 Then Continue For
@@ -454,8 +507,9 @@ Public Class firingOptimizer_vf
             .DueTime = firingDue,
             .FireMins = fireMins,
             .LoadMins = loadMins,
-            .PrevOpIsScheduled = prevScheduled
-        })
+            .PrevOpIsScheduled = prevScheduled,
+            .WipScore = wipScore,
+            .WipRejectReason = wipRejectReason})
         Next
 
         Return list
@@ -480,16 +534,16 @@ Public Class firingOptimizer_vf
     '  Batch candidate generation
     ' ============================================================
 
-    Private Function BuildPureBatchCandidates(pool As List(Of OrderCandidate),
-                                              kilnSupport As Dictionary(Of String, HashSet(Of String)),
-                                              kilnAvail As Dictionary(Of String, DateTime),
-                                              minOcc As Double,
+    Private Function BuildPureBatchCandidates(poolByCycle As Dictionary(Of String, List(Of OrderCandidate)),
+                                               kilnSupport As Dictionary(Of String, HashSet(Of String)),
+                                               kilnAvail As Dictionary(Of String, DateTime),
+                                               minOcc As Double,
                                               maxOcc As Double) As List(Of BatchCandidate)
 
         Dim cands As New List(Of BatchCandidate)()
 
         For Each cyc As String In CyclePriority1
-            Dim same As List(Of OrderCandidate) = pool.FindAll(Function(o) o.CycleType = cyc)
+            Dim same As List(Of OrderCandidate) = GetCyclePool(poolByCycle, cyc)
             Dim selected As List(Of OrderCandidate) = SelectOrdersForOccRange(same, minOcc, maxOcc)
 
             If selected.Count > 0 Then
@@ -502,34 +556,34 @@ Public Class firingOptimizer_vf
         Return cands
     End Function
 
-    Private Function BuildMixedBatchCandidates(pool As List(Of OrderCandidate),
-                                               kilnSupport As Dictionary(Of String, HashSet(Of String)),
-                                               kilnAvail As Dictionary(Of String, DateTime),
+    Private Function BuildMixedBatchCandidates(poolByCycle As Dictionary(Of String, List(Of OrderCandidate)),
+                                                kilnSupport As Dictionary(Of String, HashSet(Of String)),
+                                                kilnAvail As Dictionary(Of String, DateTime),
                                                minOcc As Double,
                                                maxOcc As Double) As List(Of BatchCandidate)
 
         Dim cands As New List(Of BatchCandidate)()
 
         ' allowed: 150+102 (governing 150), 102+65 (governing 102)
-        Dim m1 As BatchCandidate = TryBuildMixed(pool, MixA_Hi, MixA_Lo, minOcc, maxOcc, kilnSupport, kilnAvail)
+        Dim m1 As BatchCandidate = TryBuildMixed(poolByCycle, MixA_Hi, MixA_Lo, minOcc, maxOcc, kilnSupport, kilnAvail)
         If m1 IsNot Nothing Then cands.Add(m1)
 
-        Dim m2 As BatchCandidate = TryBuildMixed(pool, MixB_Hi, MixB_Lo, minOcc, maxOcc, kilnSupport, kilnAvail)
+        Dim m2 As BatchCandidate = TryBuildMixed(poolByCycle, MixB_Hi, MixB_Lo, minOcc, maxOcc, kilnSupport, kilnAvail)
         If m2 IsNot Nothing Then cands.Add(m2)
 
         Return cands
     End Function
 
-    Private Function BuildUnderfilledLegalCandidates(pool As List(Of OrderCandidate),
-                                                     kilnSupport As Dictionary(Of String, HashSet(Of String)),
-                                                     kilnAvail As Dictionary(Of String, DateTime),
+    Private Function BuildUnderfilledLegalCandidates(poolByCycle As Dictionary(Of String, List(Of OrderCandidate)),
+                                                      kilnSupport As Dictionary(Of String, HashSet(Of String)),
+                                                      kilnAvail As Dictionary(Of String, DateTime),
                                                      maxOcc As Double) As List(Of BatchCandidate)
 
         Dim cands As New List(Of BatchCandidate)()
 
         ' underfilled pure candidates (take whatever fits <= maxOcc)
         For Each cyc As String In CyclePriority1
-            Dim same As List(Of OrderCandidate) = pool.FindAll(Function(o) o.CycleType = cyc)
+            Dim same As List(Of OrderCandidate) = GetCyclePool(poolByCycle, cyc)
             Dim selected As List(Of OrderCandidate) = SelectOrdersUpToMaxOcc(same, maxOcc)
             If selected.Count > 0 Then
                 Dim cycles As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {cyc}
@@ -539,26 +593,26 @@ Public Class firingOptimizer_vf
         Next
 
         ' underfilled mixed candidates (still legal mixes only)
-        Dim m1 As BatchCandidate = TryBuildMixed(pool, MixA_Hi, MixA_Lo, 0.0, maxOcc, kilnSupport, kilnAvail, underfilledPrefix:="underfilled_")
+        Dim m1 As BatchCandidate = TryBuildMixed(poolByCycle, MixA_Hi, MixA_Lo, 0.0, maxOcc, kilnSupport, kilnAvail, underfilledPrefix:="underfilled_")
         If m1 IsNot Nothing Then cands.Add(m1)
 
-        Dim m2 As BatchCandidate = TryBuildMixed(pool, MixB_Hi, MixB_Lo, 0.0, maxOcc, kilnSupport, kilnAvail, underfilledPrefix:="underfilled_")
+        Dim m2 As BatchCandidate = TryBuildMixed(poolByCycle, MixB_Hi, MixB_Lo, 0.0, maxOcc, kilnSupport, kilnAvail, underfilledPrefix:="underfilled_")
         If m2 IsNot Nothing Then cands.Add(m2)
 
         Return cands
     End Function
 
-    Private Function TryBuildMixed(pool As List(Of OrderCandidate),
-                                   hi As String,
-                                   lo As String,
+    Private Function TryBuildMixed(poolByCycle As Dictionary(Of String, List(Of OrderCandidate)),
+                                    hi As String,
+                                    lo As String,
                                    minOcc As Double,
                                    maxOcc As Double,
                                    kilnSupport As Dictionary(Of String, HashSet(Of String)),
                                    kilnAvail As Dictionary(Of String, DateTime),
                                    Optional underfilledPrefix As String = "") As BatchCandidate
 
-        Dim hiPool As List(Of OrderCandidate) = pool.FindAll(Function(o) o.CycleType = hi)
-        Dim loPool As List(Of OrderCandidate) = pool.FindAll(Function(o) o.CycleType = lo)
+        Dim hiPool As List(Of OrderCandidate) = GetCyclePool(poolByCycle, hi)
+        Dim loPool As List(Of OrderCandidate) = GetCyclePool(poolByCycle, lo)
         If hiPool.Count = 0 OrElse loPool.Count = 0 Then Return Nothing
 
         ' Simple, debuggable mix strategy:
@@ -802,33 +856,55 @@ Public Class firingOptimizer_vf
         Return best
     End Function
 
-    Private Function GetReadyPool(unassigned As Dictionary(Of Integer, OrderCandidate), t As DateTime) As List(Of OrderCandidate)
+    Private Function GetReadyPool(unassigned As Dictionary(Of Integer, OrderCandidate),
+                                  t As DateTime,
+                                  ByRef earliestReady As DateTime,
+                                  ByRef nextReadyAfter As DateTime) As List(Of OrderCandidate)
         Dim pool As New List(Of OrderCandidate)()
+        earliestReady = DateTime.MaxValue
+        nextReadyAfter = DateTime.MinValue
+
         For Each kvp In unassigned
-            If kvp.Value.ReadyTime <= t Then pool.Add(kvp.Value)
+            Dim candidate As OrderCandidate = kvp.Value
+            Dim readyTime As DateTime = candidate.ReadyTime
+
+            If readyTime < earliestReady Then earliestReady = readyTime
+
+            If readyTime <= t Then
+                pool.Add(candidate)
+            ElseIf readyTime < DateTime.MaxValue AndAlso
+                   (nextReadyAfter = DateTime.MinValue OrElse readyTime < nextReadyAfter) Then
+                nextReadyAfter = readyTime
+            End If
         Next
         Return pool
     End Function
 
-    Private Function GetNextReadyTime(unassigned As Dictionary(Of Integer, OrderCandidate)) As DateTime
-        Dim best As DateTime = DateTime.MaxValue
-        For Each kvp In unassigned
-            If kvp.Value.ReadyTime < best Then best = kvp.Value.ReadyTime
+    Private Function BuildPoolByCycle(pool As List(Of OrderCandidate)) As Dictionary(Of String, List(Of OrderCandidate))
+        Dim result As New Dictionary(Of String, List(Of OrderCandidate))(StringComparer.Ordinal)
+
+        For Each candidate As OrderCandidate In pool
+            Dim cyclePool As List(Of OrderCandidate) = Nothing
+            If Not result.TryGetValue(candidate.CycleType, cyclePool) Then
+                cyclePool = New List(Of OrderCandidate)()
+                result.Add(candidate.CycleType, cyclePool)
+            End If
+            cyclePool.Add(candidate)
         Next
-        Return best
+
+        Return result
     End Function
 
-    Private Function GetNextReadyTimeAfter(unassigned As Dictionary(Of Integer, OrderCandidate), t As DateTime) As DateTime
-        Dim best As DateTime = DateTime.MaxValue
-        Dim found As Boolean = False
-        For Each kvp In unassigned
-            Dim rt As DateTime = kvp.Value.ReadyTime
-            If rt > t AndAlso rt < best Then
-                best = rt : found = True
-            End If
-        Next
-        If Not found Then Return DateTime.MinValue
-        Return best
+    Private Function GetCyclePool(poolByCycle As Dictionary(Of String, List(Of OrderCandidate)),
+                                  cycle As String) As List(Of OrderCandidate)
+        Dim source As List(Of OrderCandidate) = Nothing
+        If Not poolByCycle.TryGetValue(cycle, source) Then
+            Return New List(Of OrderCandidate)()
+        End If
+
+        ' Selection helpers sort their input in place, so return a copy while
+        ' retaining the exact source ordering established by the ready pool.
+        Return New List(Of OrderCandidate)(source)
     End Function
 
     Private Function SelectOrdersForOccRange(pool As List(Of OrderCandidate), minOcc As Double, maxOcc As Double) As List(Of OrderCandidate)
@@ -836,11 +912,14 @@ Public Class firingOptimizer_vf
         Dim sorted As List(Of OrderCandidate) = SortByDueThenOccThenReady(pool)
 
         Dim sel As New List(Of OrderCandidate)()
+        Dim selectedSet As New HashSet(Of OrderCandidate)()
         Dim occ As Double = 0
 
         For Each o In sorted
             If occ + o.Occ <= maxOcc + 0.0000001 Then
-                sel.Add(o) : occ += o.Occ
+                sel.Add(o)
+                selectedSet.Add(o)
+                occ += o.Occ
             End If
             If occ + 0.0000001 >= minOcc Then Exit For
         Next
@@ -849,9 +928,11 @@ Public Class firingOptimizer_vf
 
         ' Pack additional small orders if room (still respecting due ordering since sorted)
         For Each o In sorted
-            If sel.Contains(o) Then Continue For
+            If selectedSet.Contains(o) Then Continue For
             If occ + o.Occ <= maxOcc + 0.0000001 Then
-                sel.Add(o) : occ += o.Occ
+                sel.Add(o)
+                selectedSet.Add(o)
+                occ += o.Occ
             End If
         Next
 
@@ -874,9 +955,8 @@ Public Class firingOptimizer_vf
     Private Function SortByDueThenOccThenReady(list As List(Of OrderCandidate)) As List(Of OrderCandidate)
         list.Sort(Function(a, b)
                       ' 0) NEW – WIP reduction: prefer orders whose previous op is already scheduled
-                      If a.PrevOpIsScheduled <> b.PrevOpIsScheduled Then
-                          If a.PrevOpIsScheduled Then Return -1 Else Return 1
-                      End If
+                      Dim w = b.WipScore.CompareTo(a.WipScore)
+                      If w <> 0 Then Return w
 
                       ' 1) Earlier due date first
                       Dim c = a.DueTime.CompareTo(b.DueTime)
@@ -896,9 +976,8 @@ Public Class firingOptimizer_vf
     Private Function SortByDueThenReadyThenOcc(list As List(Of OrderCandidate)) As List(Of OrderCandidate)
         list.Sort(Function(a, b)
                       ' 0) NEW – WIP reduction: prefer orders whose previous op is already scheduled
-                      If a.PrevOpIsScheduled <> b.PrevOpIsScheduled Then
-                          If a.PrevOpIsScheduled Then Return -1 Else Return 1
-                      End If
+                      Dim w = b.WipScore.CompareTo(a.WipScore)
+                      If w <> 0 Then Return w
 
                       ' 1) Earlier due date first
                       Dim c = a.DueTime.CompareTo(b.DueTime)
@@ -975,57 +1054,6 @@ Public Class firingOptimizer_vf
         Return 99
     End Function
 
-    ' ============================================================
-    '  Parsing helpers
-    ' ============================================================
-
-    Private Function ParseDueAsEndOfDay(o As Object) As DateTime
-        ' 1) Let existing helper try first (keeps backward compatibility)
-        Dim dt As DateTime = SharedHelpers.ParseDueAsEndOfDay(o)
-        If dt <> DateTime.MinValue Then
-            Return dt
-        End If
-
-        ' 2) Fallback: handle dd-MM-yyyy style strings like "15-06-2025 00:00:00"
-        If o Is Nothing OrElse TypeOf o Is DBNull Then
-            Return DateTime.MinValue
-        End If
-
-        Dim s As String = o.ToString().Trim()
-        If s = "" Then
-            Return DateTime.MinValue
-        End If
-
-        Dim parsed As DateTime
-
-        ' Try exact formats matching your export
-        Dim formats() As String = {
-        "dd-MM-yyyy HH:mm:ss",
-        "dd-MM-yyyy H:mm:ss",
-        "dd-MM-yyyy"
-    }
-
-        If DateTime.TryParseExact(s,
-                              formats,
-                              CultureInfo.InvariantCulture,
-                              DateTimeStyles.None,
-                              parsed) Then
-            ' If only date is present, you can choose to push to end-of-day.
-            ' If you prefer exact time as in the file, just "Return parsed" instead.
-            ' Here we keep it simple and return the parsed value as-is.
-            Return parsed
-        End If
-
-        ' 3) Last resort: let .NET try with current culture
-        If DateTime.TryParse(s, CultureInfo.CurrentCulture, DateTimeStyles.None, parsed) Then
-            Return parsed
-        End If
-
-        ' Still nothing → treat as invalid
-        Return DateTime.MinValue
-    End Function
-
-
     Private Sub ValidateInputs(dt As DataTable, minOcc As Double, maxOcc As Double)
         If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
         If minOcc <= 0 OrElse maxOcc <= 0 OrElse minOcc > maxOcc Then Throw New ArgumentException("Invalid occupancy range.")
@@ -1040,6 +1068,9 @@ Public Class firingOptimizer_vf
         SharedHelpers.RequireColumn(dt, COL_IS_SCHEDULED)
         SharedHelpers.RequireColumn(dt, COL_SCHED_END)
         SharedHelpers.RequireColumn(dt, COL_FIRING_DUE)
+        SharedHelpers.RequireColumn(dt, "wip_status")
+        SharedHelpers.RequireColumn(dt, "wip_score")
+        SharedHelpers.RequireColumn(dt, "wip_reject_reason")
     End Sub
 
     Public Function IsKnownCycle(c As String) As Boolean
@@ -1070,6 +1101,8 @@ Public Class firingOptimizer_vf
 
         ' NEW: True if previous operation (e.g. pressing / drying) is already scheduled
         Public Property PrevOpIsScheduled As Boolean
+        Public Property WipScore As Integer
+        Public Property WipRejectReason As String
     End Class
 
 
@@ -1408,7 +1441,7 @@ Public Class firingOptimizer_vf
 
                 ' Firing due date raw + parsed (using same parser as BuildCandidates)
                 Dim firingDueRaw As Object = r(COL_FIRING_DUE)
-                Dim firingDue As DateTime = ParseDueAsEndOfDay(firingDueRaw)
+                Dim firingDue As DateTime = SharedHelpers.ParseDueAsEndOfDay(firingDueRaw)
                 Dim firingDueRawStr As String = If(firingDueRaw Is Nothing, "", firingDueRaw.ToString())
                 Dim firingDueParsedStr As String = SharedHelpers.FormatDateOrBlank(firingDue)
 
