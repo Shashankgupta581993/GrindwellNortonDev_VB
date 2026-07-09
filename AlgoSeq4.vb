@@ -23,8 +23,11 @@ Public Class AlgoSeq4
         BeginSchedulerDebug(preactor)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
         Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
 
         Dim routingDt As DataTable = readOrderTable(preactor)
+        Dim operationRows As Dictionary(Of Integer, DataRow) =
+            SharedHelpers.BuildOperationRowIndex(routingDt)
         Dim currentDate As DateTime = planningboard.TerminatorTime
 
         ' 1. Optimization: Cache Kiln Resources in a Dictionary for fast O(1) lookups
@@ -115,7 +118,8 @@ Public Class AlgoSeq4
             ' Handle Previous Operation
             Dim PREVIOUSOP As Integer = planningboard.GetPreviousOperation(firingOpRec, 1)
             If PREVIOUSOP > 0 AndAlso
-                Not SharedHelpers.IsCompletedOrActualizedOp(routingDt, PREVIOUSOP) Then
+                Not planningboard.IsOperationScheduled(PREVIOUSOP) AndAlso
+                Not SharedHelpers.IsCompletedOrActualizedOp(operationRows, PREVIOUSOP) Then
                 Try
                     Times = planningboard.BackTestOpOnResource(PREVIOUSOP, LOADBICK, batchStart)
                     If Times.HasValue Then
@@ -127,45 +131,17 @@ Public Class AlgoSeq4
             End If
 
             ' Handle Next Operations
-            Dim NEXTOP As Integer = planningboard.GetNextOperation(firingOpRec, 1)
-            If NEXTOP > 0 AndAlso
-   Not SharedHelpers.IsCompletedOrActualizedOp(routingDt, NEXTOP) Then
-                ' LAZY EVALUATION: Maintained from original logic
-                Dim batchEnd As DateTime = plan.BatchEndByBatchNo(batchNo)
-
-                Try
-                    Times = planningboard.TestOperationOnResource(NEXTOP, ULDBICK, batchEnd)
-                    If Times.HasValue Then
-                        PutOperationWithTrace(preactor, planningboard, "BatchUnloading", NEXTOP, ULDBICK, Times.Value.ProcessStart, "Forward")
-                    End If
-                Catch ex As Exception
-                End Try
-
-                ' Re-evaluate for the subsequent operation in the sequence
-                NEXTOP = planningboard.GetNextOperation(NEXTOP, 1)
-                If NEXTOP > 0 AndAlso
-   Not SharedHelpers.IsCompletedOrActualizedOp(routingDt, NEXTOP) Then
-                    Try
-                        Times = planningboard.TestOperationOnResource(NEXTOP, PREINSPC, batchEnd)
-                        If Times.HasValue Then
-                            PutOperationWithTrace(preactor, planningboard, "PostFiring", NEXTOP, PREINSPC, Times.Value.ProcessStart.AddDays(2), "Forward") '2 days
-                        End If
-                    Catch ex As Exception
-                    End Try
-
-                    NEXTOP = planningboard.GetNextOperation(NEXTOP, 1)
-                    If NEXTOP > 0 AndAlso
-   Not SharedHelpers.IsCompletedOrActualizedOp(routingDt, NEXTOP) Then
-                        Try
-                            Times = planningboard.TestOperationOnResource(NEXTOP, KILNACK, batchEnd)
-                            If Times.HasValue Then
-                                PutOperationWithTrace(preactor, planningboard, "PostFiring", NEXTOP, KILNACK, Times.Value.ProcessStart, "Forward")
-                            End If
-                        Catch ex As Exception
-                        End Try
-                    End If
-                End If
-            End If
+            Dim batchEnd As DateTime = plan.BatchEndByBatchNo(batchNo)
+            ScheduleAdjacentPostFiringStages(preactor,
+                                             planningboard,
+                                             ordersTable,
+                                             opNoField,
+                                             operationRows,
+                                             firingOpRec,
+                                             batchEnd,
+                                             New Integer() {ULDBICK, PREINSPC, KILNACK},
+                                             New Double() {0, 2, 0},
+                                             New String() {"BatchUnloading", "PostFiring", "PostFiring"})
         Next
 
         FinishSchedulerDebug(preactor)
@@ -181,9 +157,12 @@ Public Class AlgoSeq4
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
         Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
 
 
         Dim routingDt As DataTable = readOrderTable(preactor)
+        Dim operationRows As Dictionary(Of Integer, DataRow) =
+            SharedHelpers.BuildOperationRowIndex(routingDt)
         Dim currentDate As DateTime = planningboard.TerminatorTime
 
         'Dim swkMetadataDate As DateTime =
@@ -273,7 +252,9 @@ Public Class AlgoSeq4
             ' --------------------------------------------------------
             Dim previousOp As Integer = planningboard.GetPreviousOperation(firingOpRec, 1)
 
-            If previousOp > 0 Then
+            If previousOp > 0 AndAlso
+               Not planningboard.IsOperationScheduled(previousOp) AndAlso
+               Not SharedHelpers.IsCompletedOrActualizedOp(operationRows, previousOp) Then
                 Dim loadTimes As OperationTimes? =
                 planningboard.BackTestOpOnResource(previousOp, LOADSW, batchStart)
 
@@ -288,59 +269,19 @@ Public Class AlgoSeq4
             End If
 
             ' --------------------------------------------------------
-            ' 3. Schedule next unloading operation on ULDSW
+            ' 3. Schedule downstream operations, preserving sequence stage
+            '    while skipping completed/actualized operations.
             ' --------------------------------------------------------
-            Dim nextOp As Integer = planningboard.GetNextOperation(firingOpRec, 1)
-
-            If nextOp > 0 Then
-
-                Dim unloadTimes As OperationTimes? =
-                planningboard.TestOperationOnResource(nextOp, ULDSW, batchEnd)
-
-                If unloadTimes.HasValue Then
-                    PutOperationWithTrace(preactor, planningboard, "SWKUnloading", nextOp, ULDSW, unloadTimes.Value.ProcessStart, "Forward")
-                Else
-                    System.Diagnostics.Debug.WriteLine("SWK: Cannot schedule ULDSW for next op " &
-                                                   nextOp &
-                                                   ", firing op " &
-                                                   firingOpRec)
-                    Continue For
-                End If
-
-                ' ----------------------------------------------------
-                ' 4. PREINSPC
-                ' ----------------------------------------------------
-                nextOp = planningboard.GetNextOperation(nextOp, 1)
-
-                If nextOp > 0 Then
-
-                    Dim preInspTimes As OperationTimes? =
-                    planningboard.TestOperationOnResource(nextOp, PREINSPC, batchEnd)
-
-                    If preInspTimes.HasValue Then
-                        PutOperationWithTrace(preactor, planningboard, "PostFiring", nextOp, PREINSPC, preInspTimes.Value.ProcessStart.AddDays(1), "Forward")
-                    Else
-                        System.Diagnostics.Debug.WriteLine("SWK: Cannot schedule PREINSPC for op " & nextOp)
-                        Continue For
-                    End If
-
-                    ' ------------------------------------------------
-                    ' 5. KILNACK
-                    ' ------------------------------------------------
-                    nextOp = planningboard.GetNextOperation(nextOp, 1)
-
-                    If nextOp > 0 Then
-                        Dim ackTimes As OperationTimes? =
-                        planningboard.TestOperationOnResource(nextOp, KILNACK, batchEnd)
-
-                        If ackTimes.HasValue Then
-                            PutOperationWithTrace(preactor, planningboard, "PostFiring", nextOp, KILNACK, ackTimes.Value.ProcessStart, "Forward")
-                        Else
-                            System.Diagnostics.Debug.WriteLine("SWK: Cannot schedule KILNACK for op " & nextOp)
-                        End If
-                    End If
-                End If
-            End If
+            ScheduleAdjacentPostFiringStages(preactor,
+                                             planningboard,
+                                             ordersTable,
+                                             opNoField,
+                                             operationRows,
+                                             firingOpRec,
+                                             batchEnd,
+                                             New Integer() {ULDSW, PREINSPC, KILNACK},
+                                             New Double() {0, 1, 0},
+                                             New String() {"SWKUnloading", "PostFiring", "PostFiring"})
 
         Next
 
@@ -356,7 +297,10 @@ Public Class AlgoSeq4
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
         Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
         Dim routingDt As DataTable = readOrderTable(preactor)
+        Dim operationRows As Dictionary(Of Integer, DataRow) =
+            SharedHelpers.BuildOperationRowIndex(routingDt)
         Dim currentDate As DateTime = planningboard.TerminatorTime
 
         Dim GNOptimizerSettings As Integer = preactor.GetFormatNumber("GN Optimizer Settings")
@@ -408,8 +352,6 @@ Public Class AlgoSeq4
         Dim batchstart As DateTime
         Dim batchStartOffset As DateTime
         Dim PREVIOUSOP As Integer
-        Dim NEXTOP As Integer
-        Dim NEXTOPNO As Integer
         Dim opTimes As OperationTimes? ' Used to test .HasValue safely
 
         For Each firingOpRec As Integer In plan.CartNoByFiringOpRec.Keys
@@ -426,7 +368,9 @@ Public Class AlgoSeq4
 
             ' Handle Previous Operation
             PREVIOUSOP = planningboard.GetPreviousOperation(firingOpRec, 1)
-            If PREVIOUSOP > 0 Then
+            If PREVIOUSOP > 0 AndAlso
+               Not planningboard.IsOperationScheduled(PREVIOUSOP) AndAlso
+               Not SharedHelpers.IsCompletedOrActualizedOp(operationRows, PREVIOUSOP) Then
                 opTimes = planningboard.BackTestOpOnResource(PREVIOUSOP, LOADPTK, batchStartOffset)
                 If opTimes.HasValue Then
                     PutOperationWithTrace(preactor, planningboard, "TunnelLoading", PREVIOUSOP, LOADPTK, opTimes.Value.ProcessStart, "Backward")
@@ -434,45 +378,30 @@ Public Class AlgoSeq4
             End If
 
             ' Handle Next Operations
-            NEXTOP = planningboard.GetNextOperation(firingOpRec, 1)
-            If NEXTOP > 0 Then
-                opTimes = planningboard.TestOperationOnResource(NEXTOP, ULDPTK, batchStartOffset)
-                If opTimes.HasValue Then
-                    PutOperationWithTrace(preactor, planningboard, "TunnelUnloading", NEXTOP, ULDPTK, opTimes.Value.ProcessStart, "Forward")
-                End If
-
-                ' Re-evaluate for the subsequent operation in the sequence
-                NEXTOP = planningboard.GetNextOperation(NEXTOP, 1)
-
-                If NEXTOP > 0 Then
-                    NEXTOPNO = preactor.ReadFieldInt(ordersTable, "Op. No.", NEXTOP)
-
-                    If NEXTOPNO = 320 Then
-                        opTimes = planningboard.TestOperationOnResource(NEXTOP, FTDSD20, batchStartOffset)
-                        If opTimes.HasValue Then
-                            PutOperationWithTrace(preactor, planningboard, "PostFiring", NEXTOP, FTDSD20, opTimes.Value.ProcessStart, "Forward")
-                        End If
-                        NEXTOP = planningboard.GetNextOperation(NEXTOP, 1)
-                    End If
-
-                    If NEXTOP > 0 Then
-                        ' 4. Optimization: Removed double-calling of TestOperationOnResource
-                        opTimes = planningboard.TestOperationOnResource(NEXTOP, PREINSPC, batchStartOffset)
-                        If opTimes.HasValue Then
-                            PutOperationWithTrace(preactor, planningboard, "PostFiring", NEXTOP, PREINSPC, opTimes.Value.ProcessStart.AddDays(1), "Forward") '1 day offset
-                        End If
-
-                        NEXTOP = planningboard.GetNextOperation(NEXTOP, 1)
-                        If NEXTOP > 0 Then
-                            opTimes = planningboard.TestOperationOnResource(NEXTOP, KILNACK, batchStartOffset)
-                            If opTimes.HasValue Then
-                                PutOperationWithTrace(preactor, planningboard, "PostFiring", NEXTOP, KILNACK, opTimes.Value.ProcessStart, "Forward")
-                            End If
-                        End If
-                    End If
-                End If
-            End If
+            ScheduleAdjacentPostFiringStages(preactor,
+                                             planningboard,
+                                             ordersTable,
+                                             opNoField,
+                                             operationRows,
+                                             firingOpRec,
+                                             batchStartOffset,
+                                             New Integer() {ULDPTK, FTDSD20, PREINSPC, KILNACK},
+                                             New Double() {0, 0, 1, 0},
+                                             New String() {"TunnelUnloading", "PostFiring", "PostFiring", "PostFiring"},
+                                             New Integer() {0, 320, 0, 0})
         Next
+
+        ScheduleTunnelReleasedContinuations(preactor,
+                                            planningboard,
+                                            ordersTable,
+                                            opNoField,
+                                            operationRows,
+                                            routingDt,
+                                            currentDate,
+                                            ULDPTK,
+                                            FTDSD20,
+                                            PREINSPC,
+                                            KILNACK)
 
         FinishSchedulerDebug(preactor)
         preactor.DestroyStatus()
@@ -892,6 +821,11 @@ Public Class AlgoSeq4
             ' Skip pressing and earlier operations.
             If opNo > 200 AndAlso opNo < 290 Then
 
+                If SharedHelpers.IsCompletedOrActualizedOp(routingDt, opRec) Then
+                    opRec = planningboard.GetNextOperation(opRec, 1)
+                    Continue While
+                End If
+
                 ' Never reschedule an already scheduled operation.
                 If Not IsScheduledLive(planningboard, opRec) Then
 
@@ -901,18 +835,13 @@ Public Class AlgoSeq4
 
                     If opRec = startOpRec Then
 
-                        Dim wipReadyTime As DateTime =
-        GetWipReadyTimeFromRouting(routingDt, opRec)
-
-                        If wipReadyTime = DateTime.MinValue Then
-                            readyTime = Nothing
-                        Else
-                            readyTime = wipReadyTime
-                        End If
+                        readyTime = GetReleaseReadyTimeFromRouting(routingDt, opRec)
 
                     Else
 
-                        readyTime = GetReadyTimeFromScheduledPredecessors(planningboard, opRec)
+                        readyTime = GetReadyTimeFromReleasedPredecessor(routingDt,
+                                                                        planningboard,
+                                                                        opRec)
 
                     End If
                     If Not readyTime.HasValue Then
@@ -984,6 +913,451 @@ Public Class AlgoSeq4
         Return times.HasValue
 
     End Function
+    Private Function IsCompletedOrActualizedFromRows(operationRows As IDictionary(Of Integer, DataRow),
+                                                     opRec As Integer) As Boolean
+
+        Return SharedHelpers.IsCompletedOrActualizedOp(operationRows, opRec)
+
+    End Function
+
+    Private Sub ScheduleAdjacentPostFiringStages(preactor As IPreactor,
+                                                 planningboard As IPlanningBoard,
+                                                 ordersTable As Integer,
+                                                 opNoField As Integer,
+                                                 operationRows As IDictionary(Of Integer, DataRow),
+                                                 firingOpRec As Integer,
+                                                 testFrom As DateTime,
+                                                 stageResourceRecs As Integer(),
+                                                 stageStartOffsetDays As Double(),
+                                                 stageNames As String(),
+                                                 Optional stageRequiredOpNos As Integer() = Nothing,
+                                                 Optional startStageIndex As Integer = 0,
+                                                 Optional traceTunnelContinuation As Boolean = False)
+
+        If stageResourceRecs Is Nothing OrElse stageResourceRecs.Length = 0 Then Return
+
+        Dim nextOp As Integer = planningboard.GetNextOperation(firingOpRec, 1)
+        Dim stageIndex As Integer = Math.Max(0, startStageIndex)
+
+        While nextOp > 0 AndAlso stageIndex < stageResourceRecs.Length
+
+            Dim currentStageIndex As Integer = stageIndex
+            stageIndex += 1
+
+            Dim requiredOpNo As Integer = 0
+            If stageRequiredOpNos IsNot Nothing AndAlso
+               currentStageIndex < stageRequiredOpNos.Length Then
+
+                requiredOpNo = stageRequiredOpNos(currentStageIndex)
+
+            End If
+
+            If requiredOpNo > 0 Then
+                Dim liveOpNo As Integer =
+                    preactor.ReadFieldInt(ordersTable, opNoField, nextOp)
+
+                If liveOpNo <> requiredOpNo Then
+                    If traceTunnelContinuation Then
+                        TraceTunnelContinuationOperation(planningboard,
+                                                         nextOp,
+                                                         False,
+                                                         SchedulerDebugReasonCodes.TUNNEL_CONTINUATION_REQUIRED_OP_NOT_PRESENT,
+                                                         "RequiredOpNo=" & requiredOpNo.ToString(CultureInfo.InvariantCulture) &
+                                                         "; LiveNextOpNo=" & liveOpNo.ToString(CultureInfo.InvariantCulture) &
+                                                         "; StageIndex=" & currentStageIndex.ToString(CultureInfo.InvariantCulture) &
+                                                         "; advancing to next stage without consuming this operation.",
+                                                         resourceRec:=0,
+                                                         requestedStart:=testFrom)
+                    End If
+                    Continue While
+                End If
+            End If
+
+            If planningboard.IsOperationScheduled(nextOp) Then
+
+                Dim scheduledTimes As Nullable(Of Preactor.OperationResourceTimes) =
+                    planningboard.GetOperationTimes(nextOp)
+
+                If scheduledTimes.HasValue Then
+                    testFrom = scheduledTimes.Value.OperationTimes.ProcessEnd
+                End If
+
+                If traceTunnelContinuation Then
+                    TraceTunnelContinuationOperation(planningboard,
+                                                     nextOp,
+                                                     False,
+                                                     SchedulerDebugReasonCodes.TUNNEL_CONTINUATION_NEXT_ALREADY_SCHEDULED,
+                                                     "Next operation is already scheduled; release/test time advanced to " &
+                                                     FormatDateForTrace(testFrom) & ".",
+                                                     resourceRec:=0,
+                                                     requestedStart:=testFrom)
+                End If
+
+                nextOp = planningboard.GetNextOperation(nextOp, 1)
+                Continue While
+
+            End If
+
+            If IsCompletedOrActualizedFromRows(operationRows, nextOp) Then
+
+                Dim releaseTime As DateTime =
+                    SharedHelpers.GetOperationReleaseTime(operationRows, nextOp)
+
+                If releaseTime <> DateTime.MinValue Then testFrom = releaseTime
+
+                If traceTunnelContinuation Then
+                    TraceTunnelContinuationOperation(planningboard,
+                                                     nextOp,
+                                                     False,
+                                                     SchedulerDebugReasonCodes.TUNNEL_CONTINUATION_NEXT_COMPLETED,
+                                                     "Next operation is completed/actualized; release/test time advanced to " &
+                                                     FormatDateForTrace(testFrom) & ".",
+                                                     resourceRec:=0,
+                                                     requestedStart:=testFrom)
+                End If
+
+                nextOp = planningboard.GetNextOperation(nextOp, 1)
+                Continue While
+
+            End If
+
+            Dim resourceRec As Integer = stageResourceRecs(currentStageIndex)
+            If resourceRec <= 0 Then
+                If traceTunnelContinuation Then
+                    TraceTunnelContinuationOperation(planningboard,
+                                                     nextOp,
+                                                     False,
+                                                     SchedulerDebugReasonCodes.TUNNEL_CONTINUATION_NO_FEASIBLE_RESOURCE,
+                                                     "Stage resource is missing for StageIndex=" &
+                                                     currentStageIndex.ToString(CultureInfo.InvariantCulture) & ".",
+                                                     resourceRec:=resourceRec,
+                                                     requestedStart:=testFrom)
+                End If
+                Exit While
+            End If
+
+            Dim stageName As String = "PostFiring"
+            If stageNames IsNot Nothing AndAlso currentStageIndex < stageNames.Length Then
+                stageName = stageNames(currentStageIndex)
+            End If
+
+            Try
+                Dim times As OperationTimes? =
+                    planningboard.TestOperationOnResource(nextOp, resourceRec, testFrom)
+
+                If Not times.HasValue Then
+                    If traceTunnelContinuation Then
+                        TraceTunnelContinuationOperation(planningboard,
+                                                         nextOp,
+                                                         False,
+                                                         SchedulerDebugReasonCodes.TUNNEL_CONTINUATION_NO_FEASIBLE_RESOURCE,
+                                                         "No feasible placement on requested resource from " &
+                                                         FormatDateForTrace(testFrom) & ".",
+                                                         resourceRec:=resourceRec,
+                                                         requestedStart:=testFrom)
+                    End If
+                    Exit While
+                End If
+
+                Dim startTime As DateTime = times.Value.ProcessStart
+                If stageStartOffsetDays IsNot Nothing AndAlso
+                   currentStageIndex < stageStartOffsetDays.Length AndAlso
+                   stageStartOffsetDays(currentStageIndex) <> 0 Then
+
+                    startTime = startTime.AddDays(stageStartOffsetDays(currentStageIndex))
+
+                End If
+
+                PutOperationWithTrace(preactor,
+                                      planningboard,
+                                      stageName,
+                                      nextOp,
+                                      resourceRec,
+                                      startTime,
+                                      "Forward")
+
+                If traceTunnelContinuation Then
+                    TraceTunnelContinuationOperation(planningboard,
+                                                     nextOp,
+                                                     True,
+                                                     SchedulerDebugReasonCodes.OK_SCHEDULED,
+                                                     "Scheduled by tunnel continuation.",
+                                                     resourceRec:=resourceRec,
+                                                     requestedStart:=startTime)
+                End If
+
+                Dim scheduledEnd As DateTime =
+                    SharedHelpers.GetOperationReleaseTime(operationRows, nextOp)
+
+                If scheduledEnd = DateTime.MinValue Then
+                    Dim opTimes As Nullable(Of Preactor.OperationResourceTimes) =
+                        planningboard.GetOperationTimes(nextOp)
+
+                    If opTimes.HasValue Then
+                        scheduledEnd = opTimes.Value.OperationTimes.ProcessEnd
+                    Else
+                        scheduledEnd = times.Value.ProcessEnd
+                    End If
+                End If
+
+                If scheduledEnd <> DateTime.MinValue Then testFrom = scheduledEnd
+
+            Catch ex As Exception
+                System.Diagnostics.Debug.WriteLine("Post firing stage scheduling failed. FiringOpRec=" &
+                                                   firingOpRec.ToString(CultureInfo.InvariantCulture) &
+                                                   ", OpRec=" &
+                                                   nextOp.ToString(CultureInfo.InvariantCulture) &
+                                                   ", Error=" & ex.Message)
+                Exit While
+            End Try
+
+            nextOp = planningboard.GetNextOperation(nextOp, 1)
+
+        End While
+
+    End Sub
+
+    Private Sub ScheduleTunnelReleasedContinuations(preactor As IPreactor,
+                                                    planningboard As IPlanningBoard,
+                                                    ordersTable As Integer,
+                                                    opNoField As Integer,
+                                                    operationRows As IDictionary(Of Integer, DataRow),
+                                                    routingDt As DataTable,
+                                                    fallbackStart As DateTime,
+                                                    uldPtk As Integer,
+                                                    ftdsd20 As Integer,
+                                                    preinspc As Integer,
+                                                    kilnack As Integer)
+
+        If routingDt Is Nothing Then Return
+
+        TraceTunnelContinuationSourceRows(routingDt)
+
+        Dim candidates As List(Of SharedHelpers.TunnelReleasedContinuationInfo) =
+            SharedHelpers.BuildTunnelReleasedContinuations(routingDt)
+
+        For Each candidate As SharedHelpers.TunnelReleasedContinuationInfo In candidates
+
+            Dim testFrom As DateTime = candidate.ReleaseTime
+            If testFrom = DateTime.MinValue Then testFrom = fallbackStart
+
+            Dim nextOp As Integer = planningboard.GetNextOperation(candidate.OpRec, 1)
+            If nextOp <= 0 Then
+                TraceTunnelContinuationCandidate(candidate,
+                                                 False,
+                                                 SchedulerDebugReasonCodes.TUNNEL_CONTINUATION_NO_NEXT_OPERATION,
+                                                 "Released operation has no next operation in the planning-board chain.",
+                                                 0,
+                                                 testFrom)
+                Continue For
+            End If
+
+            TraceTunnelContinuationCandidate(candidate,
+                                             True,
+                                             SchedulerDebugReasonCodes.OK_INCLUDED,
+                                             "Released tunnel operation selected for continuation. NextOpRec=" &
+                                             nextOp.ToString(CultureInfo.InvariantCulture) & ".",
+                                             nextOp,
+                                             testFrom)
+
+            ScheduleAdjacentPostFiringStages(preactor,
+                                             planningboard,
+                                             ordersTable,
+                                             opNoField,
+                                             operationRows,
+                                             candidate.OpRec,
+                                             testFrom,
+                                             New Integer() {uldPtk, ftdsd20, preinspc, kilnack},
+                                             New Double() {0, 0, 1, 0},
+                                             New String() {"TunnelUnloading", "PostFiring", "PostFiring", "PostFiring"},
+                                             New Integer() {0, 320, 0, 0},
+                                             candidate.StartStageIndex,
+                                             traceTunnelContinuation:=True)
+
+        Next
+
+    End Sub
+
+    Private Function GetTunnelContinuationStartStageIndex(opNo As Integer) As Integer
+
+        Return SharedHelpers.GetTunnelContinuationStartStageIndex(opNo)
+
+    End Function
+
+    Private Sub TraceTunnelContinuationSourceRows(routingDt As DataTable)
+
+        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Enabled Then Return
+        If routingDt Is Nothing Then Return
+
+        Dim tunnelOrderLookup As Dictionary(Of String, Boolean) =
+            SharedHelpers.BuildTunnelOrderLookup(routingDt)
+
+        For Each row As DataRow In routingDt.Rows
+
+            If Not SharedHelpers.SafeBool(row("operation_releases_next")) Then Continue For
+
+            Dim included As Boolean = False
+            Dim reasonCode As String = SchedulerDebugReasonCodes.OK_INCLUDED
+            Dim reasonDetail As String = "Released operation is eligible for tunnel continuation candidate selection."
+            Dim opNo As Integer = SharedHelpers.SafeInt(row("Operation Number"))
+
+            If Not SharedHelpers.IsTunnelOrderRow(row, tunnelOrderLookup) Then
+                reasonCode = SchedulerDebugReasonCodes.TUNNEL_CONTINUATION_NOT_TUNNEL_ORDER
+                reasonDetail = "Released operation belongs to an order with no Kiln Type = 2 row at parent/order level."
+            ElseIf SharedHelpers.GetTunnelContinuationStartStageIndex(opNo) < 0 Then
+                reasonCode = SchedulerDebugReasonCodes.TUNNEL_CONTINUATION_UNSUPPORTED_RELEASED_OP
+                reasonDetail = "Released operation number is not a tunnel continuation release point."
+            ElseIf SharedHelpers.SafeDate(row("operation_release_time")) = DateTime.MinValue Then
+                reasonCode = SchedulerDebugReasonCodes.TUNNEL_CONTINUATION_NO_RELEASE_TIME
+                reasonDetail = "Released operation has no operation_release_time."
+            Else
+                included = True
+            End If
+
+            TraceTunnelContinuationRow(row,
+                                       included,
+                                       reasonCode,
+                                       reasonDetail,
+                                       0,
+                                       0,
+                                       0,
+                                       DateTime.MinValue)
+
+        Next
+
+    End Sub
+
+    Private Sub TraceTunnelContinuationCandidate(candidate As SharedHelpers.TunnelReleasedContinuationInfo,
+                                                 included As Boolean,
+                                                 reasonCode As String,
+                                                 reasonDetail As String,
+                                                 nextOpRec As Integer,
+                                                 requestedStart As DateTime)
+
+        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Enabled Then Return
+        If candidate Is Nothing Then Return
+
+        Dim detail As String = reasonDetail &
+            " GroupKey=" & candidate.GroupKey &
+            "; ReleasedOpRec=" & candidate.OpRec.ToString(CultureInfo.InvariantCulture) &
+            "; ReleasedOpNo=" & candidate.OpNo.ToString(CultureInfo.InvariantCulture) &
+            "; NextOpRec=" & nextOpRec.ToString(CultureInfo.InvariantCulture) &
+            "; RequestedStart=" & FormatDateForTrace(requestedStart) & "."
+
+        _schedulerDebug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+            .OptimizerName = "TunnelContinuation",
+            .Stage = "TunnelContinuation",
+            .StepName = "LatestReleasedCandidate",
+            .OrderNo = candidate.OrderNo,
+            .ParentRecordNo = candidate.ParentRecord,
+            .RecordNo = candidate.OpRec,
+            .OperationNumber = candidate.OpNo,
+            .BeforeCount = 0,
+            .AfterCount = 0,
+            .Included = included,
+            .ReasonCode = reasonCode,
+            .ReasonDetail = detail,
+            .RankScore = candidate.OpNo,
+            .RankBreakdown = "ReleaseTime=" & FormatDateForTrace(candidate.ReleaseTime) &
+                             "; StartStageIndex=" & candidate.StartStageIndex.ToString(CultureInfo.InvariantCulture)
+        })
+
+    End Sub
+
+    Private Sub TraceTunnelContinuationOperation(planningboard As IPlanningBoard,
+                                                 opRec As Integer,
+                                                 included As Boolean,
+                                                 reasonCode As String,
+                                                 reasonDetail As String,
+                                                 resourceRec As Integer,
+                                                 requestedStart As DateTime)
+
+        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Enabled Then Return
+
+        Dim snapshot As OperationSnapshot = _schedulerDebug.FindOperationSnapshot(opRec)
+        Dim nextOpRec As Integer = 0
+        Dim nextOpNo As Integer = 0
+
+        Try
+            nextOpRec = planningboard.GetNextOperation(opRec, 1)
+            Dim nextSnapshot As OperationSnapshot = _schedulerDebug.FindOperationSnapshot(nextOpRec)
+            If nextSnapshot IsNot Nothing Then nextOpNo = nextSnapshot.OperationNumber
+        Catch
+            nextOpRec = 0
+        End Try
+
+        Dim detail As String = reasonDetail &
+            " NextOpRec=" & nextOpRec.ToString(CultureInfo.InvariantCulture) &
+            "; NextOpNo=" & nextOpNo.ToString(CultureInfo.InvariantCulture) &
+            "; RequestedResource=" & resourceRec.ToString(CultureInfo.InvariantCulture) &
+            "; RequestedStart=" & FormatDateForTrace(requestedStart) & "."
+
+        _schedulerDebug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+            .OptimizerName = "TunnelContinuation",
+            .Stage = "TunnelContinuation",
+            .StepName = "NextOperationTraversal",
+            .OrderNo = If(snapshot Is Nothing, "", snapshot.OrderNo),
+            .ParentRecordNo = If(snapshot Is Nothing, 0, snapshot.ParentRecordNo),
+            .RecordNo = opRec,
+            .OperationNumber = If(snapshot Is Nothing, 0, snapshot.OperationNumber),
+            .BeforeCount = 0,
+            .AfterCount = 0,
+            .Included = included,
+            .ReasonCode = reasonCode,
+            .ReasonDetail = detail,
+            .RankScore = 0,
+            .RankBreakdown = ""
+        })
+
+    End Sub
+
+    Private Sub TraceTunnelContinuationRow(row As DataRow,
+                                           included As Boolean,
+                                           reasonCode As String,
+                                           reasonDetail As String,
+                                           nextOpRec As Integer,
+                                           nextOpNo As Integer,
+                                           resourceRec As Integer,
+                                           requestedStart As DateTime)
+
+        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Enabled Then Return
+        If row Is Nothing Then Return
+
+        Dim detail As String = reasonDetail &
+            " parent_record=" & SharedHelpers.GetEffectiveParentRecord(row).ToString(CultureInfo.InvariantCulture) &
+            "; released_op_rec=" & SharedHelpers.SafeInt(row("OrdersID")).ToString(CultureInfo.InvariantCulture) &
+            "; released_op_no=" & SharedHelpers.SafeInt(row("Operation Number")).ToString(CultureInfo.InvariantCulture) &
+            "; next_op_rec=" & nextOpRec.ToString(CultureInfo.InvariantCulture) &
+            "; next_op_no=" & nextOpNo.ToString(CultureInfo.InvariantCulture) &
+            "; requested_resource=" & resourceRec.ToString(CultureInfo.InvariantCulture) &
+            "; requested_start=" & FormatDateForTrace(requestedStart) & "."
+
+        _schedulerDebug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+            .OptimizerName = "TunnelContinuation",
+            .Stage = "TunnelContinuation",
+            .StepName = "ReleasedOperationFilter",
+            .OrderNo = SharedHelpers.SafeStr(row("Order No")).Trim(),
+            .ParentRecordNo = SharedHelpers.GetEffectiveParentRecord(row),
+            .RecordNo = SharedHelpers.SafeInt(row("OrdersID")),
+            .OperationNumber = SharedHelpers.SafeInt(row("Operation Number")),
+            .BeforeCount = 0,
+            .AfterCount = 0,
+            .Included = included,
+            .ReasonCode = reasonCode,
+            .ReasonDetail = detail,
+            .RankScore = 0,
+            .RankBreakdown = ""
+        })
+
+    End Sub
+
+    Private Function FormatDateForTrace(value As DateTime) As String
+
+        If value = DateTime.MinValue Then Return ""
+        Return value.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
+
+    End Function
+
     Private Function GetWipReadyTimeFromRouting(routingDt As DataTable,
                                             opRec As Integer) As DateTime
 
@@ -998,6 +1372,57 @@ Public Class AlgoSeq4
         Next
 
         Return DateTime.MinValue
+
+    End Function
+    Private Function GetReleaseReadyTimeFromRouting(routingDt As DataTable,
+                                                    opRec As Integer) As DateTime?
+
+        If routingDt Is Nothing OrElse opRec <= 0 Then Return Nothing
+
+        For Each r As DataRow In routingDt.Rows
+
+            If SharedHelpers.SafeInt(r("OrdersID")) <> opRec Then Continue For
+
+            If SharedHelpers.SafeBool(r("operation_releases_next")) Then
+                Dim releaseTime As DateTime =
+                    SharedHelpers.SafeDate(r("operation_release_time"))
+
+                If releaseTime <> DateTime.MinValue Then Return releaseTime
+            End If
+
+            Dim wipReadyTime As DateTime =
+                SharedHelpers.SafeDate(r("wip_ready_time"))
+
+            If wipReadyTime <> DateTime.MinValue Then Return wipReadyTime
+
+            Return Nothing
+
+        Next
+
+        Return Nothing
+
+    End Function
+
+    Private Function GetReadyTimeFromReleasedPredecessor(routingDt As DataTable,
+                                                         planningboard As IPlanningBoard,
+                                                         opRec As Integer) As DateTime?
+
+        Dim prevRec As Integer = planningboard.GetPreviousOperation(opRec, 1)
+        If prevRec <= 0 Then Return Nothing
+
+        Dim releaseTime As DateTime =
+            SharedHelpers.GetOperationReleaseTime(routingDt, prevRec)
+
+        If releaseTime <> DateTime.MinValue Then Return releaseTime
+
+        Dim prevTimes As Nullable(Of Preactor.OperationResourceTimes) =
+            planningboard.GetOperationTimes(prevRec)
+
+        If prevTimes.HasValue Then
+            Return prevTimes.Value.OperationTimes.ProcessEnd
+        End If
+
+        Return Nothing
 
     End Function
     Private Function GetReadyTimeFromScheduledPredecessors(planningboard As IPlanningBoard,

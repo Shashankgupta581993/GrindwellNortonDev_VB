@@ -21,6 +21,7 @@ Public Class PostFiringScheduler
         Public Property WipScore As Integer
         Public Property WipStatus As String
         Public Property WipRejectReason As String
+        Public Property OperationRows As IDictionary(Of Integer, DataRow)
     End Class
 
     Public Function BuildQueue(preactor As IPreactor,
@@ -125,7 +126,8 @@ Public Class PostFiringScheduler
                     .Priority = ReadPriority(preactor, ordersTable, priorityField, nextOpRec),
                     .WipScore = wipScore,
                     .WipStatus = wipStatus,
-                    .WipRejectReason = wipRejectReason
+                    .WipRejectReason = wipRejectReason,
+                    .OperationRows = rowByOpRec
 })
 
 
@@ -177,6 +179,18 @@ Public Class PostFiringScheduler
                 While opRec > 0
                     If planningboard.IsOperationScheduled(opRec) Then
                         testFrom = GetScheduledEnd(planningboard, opRec, testFrom)
+                        opRec = planningboard.GetNextOperation(opRec, 1)
+                        Continue While
+                    End If
+
+                    If SharedHelpers.IsCompletedOrActualizedOp(item.OperationRows, opRec) Then
+                        Dim releaseTime As DateTime =
+                            SharedHelpers.GetOperationReleaseTime(item.OperationRows, opRec)
+
+                        If releaseTime <> DateTime.MinValue Then
+                            testFrom = releaseTime
+                        End If
+
                         opRec = planningboard.GetNextOperation(opRec, 1)
                         Continue While
                     End If

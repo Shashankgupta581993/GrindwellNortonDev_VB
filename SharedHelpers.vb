@@ -722,12 +722,161 @@ Public Module SharedHelpers
 
     End Function
 
-    Private Function GetEffectiveParentRecord(row As DataRow) As Integer
+    Public Function GetEffectiveParentRecord(row As DataRow) As Integer
 
         Dim parentRecord As Integer = SafeInt(row("parent_record"))
         If parentRecord > 0 Then Return parentRecord
 
         Return SafeInt(row("OrdersID"))
+
+    End Function
+
+    Public Class TunnelReleasedContinuationInfo
+        Public Property GroupKey As String
+        Public Property ParentRecord As Integer
+        Public Property OrderNo As String
+        Public Property OpRec As Integer
+        Public Property OpNo As Integer
+        Public Property ReleaseTime As DateTime
+        Public Property StartStageIndex As Integer
+    End Class
+
+    Public Function BuildTunnelOrderLookup(dt As DataTable) As Dictionary(Of String, Boolean)
+
+        Dim result As New Dictionary(Of String, Boolean)(StringComparer.OrdinalIgnoreCase)
+        If dt Is Nothing Then Return result
+
+        For Each row As DataRow In dt.Rows
+            If SafeInt(row("Kiln Type")) <> 2 Then Continue For
+
+            For Each key As String In GetTunnelOrderKeys(row)
+                If Not result.ContainsKey(key) Then result.Add(key, True)
+            Next
+        Next
+
+        Return result
+
+    End Function
+
+    Public Function IsTunnelOrderRow(row As DataRow,
+                                     tunnelOrderLookup As IDictionary(Of String, Boolean)) As Boolean
+
+        If row Is Nothing OrElse tunnelOrderLookup Is Nothing Then Return False
+
+        For Each key As String In GetTunnelOrderKeys(row)
+            If tunnelOrderLookup.ContainsKey(key) Then Return True
+        Next
+
+        Return False
+
+    End Function
+
+    Public Function BuildTunnelReleasedContinuations(dt As DataTable) _
+        As List(Of TunnelReleasedContinuationInfo)
+
+        Dim result As New List(Of TunnelReleasedContinuationInfo)()
+        If dt Is Nothing Then Return result
+
+        Dim tunnelOrderLookup As Dictionary(Of String, Boolean) =
+            BuildTunnelOrderLookup(dt)
+
+        Dim latestByGroup As New Dictionary(Of String, TunnelReleasedContinuationInfo)(
+            StringComparer.OrdinalIgnoreCase)
+
+        For Each row As DataRow In dt.Rows
+
+            If Not IsTunnelOrderRow(row, tunnelOrderLookup) Then Continue For
+            If Not SafeBool(row("operation_releases_next")) Then Continue For
+
+            Dim opNo As Integer = SafeInt(row("Operation Number"))
+            Dim startStageIndex As Integer = GetTunnelContinuationStartStageIndex(opNo)
+            If startStageIndex < 0 Then Continue For
+
+            Dim releaseTime As DateTime = SafeDate(row("operation_release_time"))
+            If releaseTime = DateTime.MinValue Then Continue For
+
+            Dim groupKey As String = GetPreferredTunnelOrderKey(row)
+            If groupKey = "" Then Continue For
+
+            Dim candidate As New TunnelReleasedContinuationInfo With {
+                .GroupKey = groupKey,
+                .ParentRecord = GetEffectiveParentRecord(row),
+                .OrderNo = SafeStr(row("Order No")).Trim(),
+                .OpRec = SafeInt(row("OrdersID")),
+                .OpNo = opNo,
+                .ReleaseTime = releaseTime,
+                .StartStageIndex = startStageIndex
+            }
+
+            Dim existing As TunnelReleasedContinuationInfo = Nothing
+            If latestByGroup.TryGetValue(groupKey, existing) Then
+                If candidate.OpNo < existing.OpNo Then Continue For
+                If candidate.OpNo = existing.OpNo AndAlso
+                   candidate.ReleaseTime <= existing.ReleaseTime Then Continue For
+            End If
+
+            latestByGroup(groupKey) = candidate
+
+        Next
+
+        result.AddRange(latestByGroup.Values)
+        Return result
+
+    End Function
+
+    Public Function GetTunnelContinuationStartStageIndex(opNo As Integer) As Integer
+
+        Select Case opNo
+            Case 300
+                Return 0
+            Case 310
+                Return 1
+            Case 320
+                Return 2
+            Case 390
+                Return 3
+            Case Else
+                Return -1
+        End Select
+
+    End Function
+
+    Private Function GetPreferredTunnelOrderKey(row As DataRow) As String
+
+        Dim parentRecord As Integer = GetEffectiveParentRecord(row)
+        If parentRecord > 0 Then
+            Return "P:" & parentRecord.ToString(CultureInfo.InvariantCulture)
+        End If
+
+        Dim orderNo As String = SafeStr(row("Order No")).Trim()
+        If orderNo <> "" Then Return "O:" & orderNo
+
+        Dim opRec As Integer = SafeInt(row("OrdersID"))
+        If opRec > 0 Then Return "R:" & opRec.ToString(CultureInfo.InvariantCulture)
+
+        Return ""
+
+    End Function
+
+    Private Function GetTunnelOrderKeys(row As DataRow) As List(Of String)
+
+        Dim result As New List(Of String)()
+        If row Is Nothing Then Return result
+
+        Dim parentRecord As Integer = GetEffectiveParentRecord(row)
+        If parentRecord > 0 Then
+            result.Add("P:" & parentRecord.ToString(CultureInfo.InvariantCulture))
+        End If
+
+        Dim orderNo As String = SafeStr(row("Order No")).Trim()
+        If orderNo <> "" Then result.Add("O:" & orderNo)
+
+        Dim opRec As Integer = SafeInt(row("OrdersID"))
+        If opRec > 0 AndAlso result.Count = 0 Then
+            result.Add("R:" & opRec.ToString(CultureInfo.InvariantCulture))
+        End If
+
+        Return result
 
     End Function
 
@@ -1799,8 +1948,9 @@ Public Module SharedHelpers
 
             ' --------------------------------------------------------
             ' Normal case:
-            ' Firing readiness comes from the last released operation
-            ' before loading 290.
+            ' Firing readiness comes from the latest released operation
+            ' before loading 290. This intentionally supports direct
+            ' 200 -> 290 routings where no drying operations exist.
             ' --------------------------------------------------------
             Dim lastPre290OpNo As Integer = 0
             Dim lastPre290ReadyTime As DateTime = DateTime.MinValue
@@ -1811,29 +1961,19 @@ Public Module SharedHelpers
                 Dim opNo As Integer = SafeInt(r("Operation Number"))
 
                 If opNo <= 0 OrElse opNo >= 290 Then Continue For
+                If Not SafeBool(r("operation_releases_next")) Then Continue For
 
-                ' This helper requires the last operation before 290
-                ' to be released. If a later pre-290 operation is pending,
-                ' firing will not be released yet.
-                If opNo > lastPre290OpNo Then
+                Dim releaseTime As DateTime =
+                SafeDate(r("operation_release_time"))
+
+                If releaseTime = DateTime.MinValue Then Continue For
+
+                If opNo > lastPre290OpNo OrElse
+               (opNo = lastPre290OpNo AndAlso releaseTime > lastPre290ReadyTime) Then
+
                     lastPre290OpNo = opNo
-                    lastPre290ReadyTime = DateTime.MinValue
+                    lastPre290ReadyTime = releaseTime
                     lastPre290OpRec = SafeInt(r("OrdersID"))
-                End If
-
-                If opNo = lastPre290OpNo AndAlso
-               SafeBool(r("operation_releases_next")) Then
-
-                    Dim releaseTime As DateTime =
-                    SafeDate(r("operation_release_time"))
-
-                    If releaseTime <> DateTime.MinValue AndAlso
-                   releaseTime > lastPre290ReadyTime Then
-
-                        lastPre290ReadyTime = releaseTime
-                        lastPre290OpRec = SafeInt(r("OrdersID"))
-
-                    End If
 
                 End If
 
