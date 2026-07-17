@@ -8,6 +8,7 @@ Imports System.Linq
 Imports Preactor
 
 Public Class PostFiringScheduler
+    Private Const POSTFIRING_START_OP_NO As Integer = 400
 
     Public Class QueueItem
         Public Property ParentRecord As Integer
@@ -43,6 +44,7 @@ Public Class PostFiringScheduler
         RequireColumn(routingDt, "operation_releases_next")
         RequireColumn(routingDt, "operation_release_time")
         RequireColumn(routingDt, "operation_effective_completed")
+        RequireColumn(routingDt, "Operation Number")
 
         Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
         Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
@@ -52,51 +54,44 @@ Public Class PostFiringScheduler
         Dim queue As New List(Of QueueItem)()
         Dim rowByOpRec As Dictionary(Of Integer, DataRow) =
             SharedHelpers.BuildOperationRowIndex(routingDt)
+        Dim boundaries As List(Of SharedHelpers.ReleaseBoundaryInfo) =
+            SharedHelpers.BuildLatestReleaseBoundaries(routingDt)
 
-        For Each r As DataRow In routingDt.Rows
+        If boundaries.Count = 0 AndAlso debug IsNot Nothing AndAlso debug.Enabled Then
+            debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+                .OptimizerName = "PostFiringScheduler",
+                .Stage = "PostFiring400Plus",
+                .StepName = "LatestReleaseBoundary",
+                .OrderNo = "",
+                .ParentRecordNo = 0,
+                .RecordNo = 0,
+                .OperationNumber = 0,
+                .BeforeCount = routingDt.Rows.Count,
+                .AfterCount = 0,
+                .Included = False,
+                .ReasonCode = SchedulerDebugReasonCodes.POSTFIRING_NO_RELEASE_BOUNDARY,
+                .ReasonDetail = "No operation_releases_next boundary with valid operation_release_time was found.",
+                .RankScore = 0,
+                .RankBreakdown = ""
+            })
+        End If
 
-            If Not IsKilnAckRow(routingDt, r, kilnAckName) Then Continue For
-            'If Not SafeBool(r("is_scheduled")) Then Continue For
+        For Each boundary As SharedHelpers.ReleaseBoundaryInfo In boundaries
 
-            'Dim kilnAckOpRec As Integer = SafeInt(r("OrdersID"))
-            'If kilnAckOpRec <= 0 Then Continue For
+            TraceBoundary(debug,
+                          boundary,
+                          True,
+                          SchedulerDebugReasonCodes.OK_INCLUDED,
+                          "Latest completed/released boundary selected for 400+ postfiring.")
 
-            'Dim kilnAckEnd As DateTime = SafeDate(r("scheduled_end_time"))
-            'If kilnAckEnd = DateTime.MinValue Then Continue For
-            If Not SafeBool(r("operation_releases_next")) Then Continue For
-
-            Dim kilnAckOpRec As Integer = SafeInt(r("OrdersID"))
-            If kilnAckOpRec <= 0 Then Continue For
-
-            Dim kilnAckEnd As DateTime = SharedHelpers.SafeDate(r("operation_release_time"))
-            If kilnAckEnd = DateTime.MinValue Then Continue For
-
-            ' First unscheduled operation after KILNACK
-            Dim nextOpRec As Integer = planningboard.GetNextOperation(kilnAckOpRec, 1)
-
-            'While nextOpRec > 0 AndAlso planningboard.IsOperationScheduled(nextOpRec)
-            '    nextOpRec = planningboard.GetNextOperation(nextOpRec, 1)
-            'End While
-            While nextOpRec > 0
-
-                If planningboard.IsOperationScheduled(nextOpRec) Then
-                    nextOpRec = planningboard.GetNextOperation(nextOpRec, 1)
-                    Continue While
-                End If
-
-                Dim tempRow As DataRow = Nothing
-
-                If rowByOpRec.TryGetValue(nextOpRec, tempRow) AndAlso
-       SharedHelpers.IsCompletedOrActualizedRow(tempRow) Then
-
-                    nextOpRec = planningboard.GetNextOperation(nextOpRec, 1)
-                    Continue While
-
-                End If
-
-                Exit While
-
-            End While
+            Dim nextOpRec As Integer =
+                FindNextPostFiringCandidate(preactor,
+                                            planningboard,
+                                            ordersTable,
+                                            opNoField,
+                                            rowByOpRec,
+                                            boundary,
+                                            debug)
             If nextOpRec <= 0 Then Continue For
 
             Dim nextOpNo As Integer
@@ -114,12 +109,12 @@ Public Class PostFiringScheduler
             Dim wipRejectReason As String = SafeStr(nextRow("wip_reject_reason"))
 
             ' Do not use snapshot WIP status as a hard gate here. A scheduled
-            ' KILNACK and the live routing chain determine post-firing eligibility.
+            ' release boundary and the live routing chain determine post-firing eligibility.
             queue.Add(New QueueItem With {
-                    .ParentRecord = SafeInt(r("parent_record")),
-                    .OrderNo = SafeStr(r("Order No")),
-                    .KilnAckOpRec = kilnAckOpRec,
-                    .KilnAckEndTime = kilnAckEnd,
+                    .ParentRecord = boundary.ParentRecord,
+                    .OrderNo = boundary.OrderNo,
+                    .KilnAckOpRec = boundary.OpRec,
+                    .KilnAckEndTime = boundary.ReleaseTime,
                     .NextOpRec = nextOpRec,
                     .NextOpNo = nextOpNo,
                     .DueDate = ReadDueDate(preactor, ordersTable, dueDateField, nextOpRec),
@@ -146,11 +141,11 @@ Public Class PostFiringScheduler
             For i As Integer = 0 To ranked.Count - 1
                 Dim item As QueueItem = ranked(i)
                 debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
-                    .OptimizerName = "PostFiringScheduler", .Stage = "PostFiring", .StepName = "FinalRankedQueue",
+                    .OptimizerName = "PostFiringScheduler", .Stage = "PostFiring400Plus", .StepName = "FinalRankedQueue",
                     .OrderNo = item.OrderNo, .ParentRecordNo = item.ParentRecord, .RecordNo = item.NextOpRec,
                     .OperationNumber = item.NextOpNo, .BeforeCount = routingDt.Rows.Count, .AfterCount = ranked.Count,
                     .Included = True, .ReasonCode = SchedulerDebugReasonCodes.OK_INCLUDED,
-                    .ReasonDetail = "Included in post-firing queue.", .RankScore = item.WipScore
+                    .ReasonDetail = "Included in 400+ postfiring queue.", .RankScore = item.WipScore
                 })
             Next
         End If
@@ -198,6 +193,10 @@ Public Class PostFiringScheduler
                     Dim liveOpNo As Integer =
                         preactor.ReadFieldInt(ordersTable, opNoField, opRec)
 
+                    If liveOpNo < POSTFIRING_START_OP_NO Then
+                        Exit While
+                    End If
+
                     Dim bestResRec As Integer = 0
                     Dim bestTimes As OperationTimes? = Nothing
                     Dim resources As IEnumerable(Of Integer) =
@@ -244,6 +243,13 @@ Public Class PostFiringScheduler
                                         item.OrderNo &
                                         ", OpRec=" & opRec &
                                         ", OpNo=" & liveOpNo)
+                        TraceCandidate(debug,
+                                       item,
+                                       opRec,
+                                       liveOpNo,
+                                       False,
+                                       SchedulerDebugReasonCodes.POSTFIRING_NO_FEASIBLE_RESOURCE,
+                                       "No feasible resource was found for 400+ postfiring placement.")
                     End If
 
                     opRec = planningboard.GetNextOperation(opRec, 1)
@@ -262,11 +268,165 @@ Public Class PostFiringScheduler
 
     End Function
 
+    Private Function FindNextPostFiringCandidate(preactor As IPreactor,
+                                                 planningboard As IPlanningBoard,
+                                                 ordersTable As Integer,
+                                                 opNoField As Integer,
+                                                 rowByOpRec As IDictionary(Of Integer, DataRow),
+                                                 boundary As SharedHelpers.ReleaseBoundaryInfo,
+                                                 debug As SchedulerDebugCollector) As Integer
+
+        Dim nextOpRec As Integer = planningboard.GetNextOperation(boundary.OpRec, 1)
+        If nextOpRec <= 0 Then
+            TraceBoundary(debug,
+                          boundary,
+                          False,
+                          SchedulerDebugReasonCodes.POSTFIRING_NO_NEXT_OPERATION,
+                          "Released boundary has no next operation in the live planning-board chain.")
+            Return 0
+        End If
+
+        While nextOpRec > 0
+
+            Dim nextOpNo As Integer = 0
+            Try
+                nextOpNo = preactor.ReadFieldInt(ordersTable, opNoField, nextOpRec)
+            Catch
+                TraceBoundary(debug,
+                              boundary,
+                              False,
+                              SchedulerDebugReasonCodes.DATA_MISSING_OPERATION_NUMBER,
+                              "Unable to read next operation number. NextOpRec=" &
+                              nextOpRec.ToString(Globalization.CultureInfo.InvariantCulture) & ".")
+                Return 0
+            End Try
+
+            If planningboard.IsOperationScheduled(nextOpRec) Then
+                TraceBoundary(debug,
+                              boundary,
+                              False,
+                              SchedulerDebugReasonCodes.POSTFIRING_NEXT_ALREADY_SCHEDULED,
+                              "Next operation is already scheduled; advancing. NextOpRec=" &
+                              nextOpRec.ToString(Globalization.CultureInfo.InvariantCulture) &
+                              "; NextOpNo=" &
+                              nextOpNo.ToString(Globalization.CultureInfo.InvariantCulture) & ".")
+                nextOpRec = planningboard.GetNextOperation(nextOpRec, 1)
+                Continue While
+            End If
+
+            If SharedHelpers.IsCompletedOrActualizedOp(rowByOpRec, nextOpRec) Then
+                TraceBoundary(debug,
+                              boundary,
+                              False,
+                              SchedulerDebugReasonCodes.POSTFIRING_NEXT_COMPLETED,
+                              "Next operation is completed/actualized; advancing. NextOpRec=" &
+                              nextOpRec.ToString(Globalization.CultureInfo.InvariantCulture) &
+                              "; NextOpNo=" &
+                              nextOpNo.ToString(Globalization.CultureInfo.InvariantCulture) & ".")
+                nextOpRec = planningboard.GetNextOperation(nextOpRec, 1)
+                Continue While
+            End If
+
+            If nextOpNo < POSTFIRING_START_OP_NO Then
+                TraceBoundary(debug,
+                              boundary,
+                              False,
+                              SchedulerDebugReasonCodes.POSTFIRING_NEXT_BELOW_RANGE_BLOCKED,
+                              "First pending operation is below 400, so 400+ is not released. NextOpRec=" &
+                              nextOpRec.ToString(Globalization.CultureInfo.InvariantCulture) &
+                              "; NextOpNo=" &
+                              nextOpNo.ToString(Globalization.CultureInfo.InvariantCulture) & ".")
+                Return 0
+            End If
+
+            TraceBoundary(debug,
+                          boundary,
+                          True,
+                          SchedulerDebugReasonCodes.OK_INCLUDED,
+                          "Selected next pending 400+ operation. NextOpRec=" &
+                          nextOpRec.ToString(Globalization.CultureInfo.InvariantCulture) &
+                          "; NextOpNo=" &
+                          nextOpNo.ToString(Globalization.CultureInfo.InvariantCulture) & ".")
+            Return nextOpRec
+
+        End While
+
+        TraceBoundary(debug,
+                      boundary,
+                      False,
+                      SchedulerDebugReasonCodes.POSTFIRING_NO_NEXT_OPERATION,
+                      "No pending 400+ operation found after released boundary.")
+        Return 0
+
+    End Function
+
+    Private Sub TraceBoundary(debug As SchedulerDebugCollector,
+                              boundary As SharedHelpers.ReleaseBoundaryInfo,
+                              included As Boolean,
+                              reasonCode As String,
+                              reasonDetail As String)
+
+        If debug Is Nothing OrElse Not debug.Enabled Then Return
+        If boundary Is Nothing Then Return
+
+        debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+            .OptimizerName = "PostFiringScheduler",
+            .Stage = "PostFiring400Plus",
+            .StepName = "LatestReleaseBoundary",
+            .OrderNo = boundary.OrderNo,
+            .ParentRecordNo = boundary.ParentRecord,
+            .RecordNo = boundary.OpRec,
+            .OperationNumber = boundary.OpNo,
+            .BeforeCount = 0,
+            .AfterCount = 0,
+            .Included = included,
+            .ReasonCode = reasonCode,
+            .ReasonDetail = reasonDetail &
+                            " GroupKey=" & boundary.GroupKey &
+                            "; ReleasedOpRec=" & boundary.OpRec.ToString(Globalization.CultureInfo.InvariantCulture) &
+                            "; ReleasedOpNo=" & boundary.OpNo.ToString(Globalization.CultureInfo.InvariantCulture) &
+                            "; ReleaseTime=" & FormatDateForTrace(boundary.ReleaseTime) & ".",
+            .RankScore = boundary.WipScore,
+            .RankBreakdown = ""
+        })
+
+    End Sub
+
+    Private Sub TraceCandidate(debug As SchedulerDebugCollector,
+                               item As QueueItem,
+                               opRec As Integer,
+                               opNo As Integer,
+                               included As Boolean,
+                               reasonCode As String,
+                               reasonDetail As String)
+
+        If debug Is Nothing OrElse Not debug.Enabled Then Return
+        If item Is Nothing Then Return
+
+        debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+            .OptimizerName = "PostFiringScheduler",
+            .Stage = "PostFiring400Plus",
+            .StepName = "ScheduleTraversal",
+            .OrderNo = item.OrderNo,
+            .ParentRecordNo = item.ParentRecord,
+            .RecordNo = opRec,
+            .OperationNumber = opNo,
+            .BeforeCount = 0,
+            .AfterCount = 0,
+            .Included = included,
+            .ReasonCode = reasonCode,
+            .ReasonDetail = reasonDetail,
+            .RankScore = item.WipScore,
+            .RankBreakdown = ""
+        })
+
+    End Sub
+
     Private Function CreateAttempt(debug As SchedulerDebugCollector, item As QueueItem, opRec As Integer,
                                    opNo As Integer, resourceRec As Integer, startTime As DateTime) As ScheduleAttemptTraceRow
         If debug Is Nothing OrElse Not debug.Enabled Then Return Nothing
         Dim row As New ScheduleAttemptTraceRow With {
-            .Stage = "PostFiring", .OrderNo = item.OrderNo, .ParentRecordNo = item.ParentRecord,
+            .Stage = "PostFiring400Plus", .OrderNo = item.OrderNo, .ParentRecordNo = item.ParentRecord,
             .RecordNo = opRec, .OperationNumber = opNo, .RequestedResource = resourceRec.ToString(),
             .RequestedStartTime = startTime, .SchedulingDirection = "Forward", .WasAttempted = True
         }
@@ -369,6 +529,11 @@ Public Class PostFiringScheduler
         End If
 
         Return fallback
+    End Function
+
+    Private Function FormatDateForTrace(value As DateTime) As String
+        If value = DateTime.MinValue Then Return ""
+        Return value.ToString("yyyy-MM-dd HH:mm:ss", Globalization.CultureInfo.InvariantCulture)
     End Function
 
     Private Sub RequireColumn(dt As DataTable, colName As String)

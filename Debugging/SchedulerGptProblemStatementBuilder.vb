@@ -50,14 +50,16 @@ Public Class SchedulerGptProblemStatementBuilder
         sb.AppendLine("- Firing loading: 290")
         sb.AppendLine("- Firing: 300")
         sb.AppendLine("- Firing unloading: 310")
-        sb.AppendLine("- PostFiring: 380+").AppendLine()
+        sb.AppendLine("- FiringFollowOn: 320-395")
+        sb.AppendLine("- PostFiring400Plus: 400+").AppendLine()
         sb.AppendLine("## Firing types").AppendLine("- Batch").AppendLine("- Tunnel").AppendLine("- SWK").AppendLine()
         sb.AppendLine("## Recent logic context")
         sb.AppendLine("- Optimizers return parent records.")
         sb.AppendLine("- Batch firing uses occupancy, cycle type, kiln matrix, loading buffer, daily batch limit, and predecessor completion.")
         sb.AppendLine("- Tunnel firing uses cart pitch, carts per day, total carts, occupancy, and predecessor completion.")
         sb.AppendLine("- Pressing uses previous-operation readiness, resource group, wheel dia/pin, and cooldown/changeover rules.")
-        sb.AppendLine("- PostFiring schedules forward after previous operation is scheduled.")
+        sb.AppendLine("- FiringFollowOn schedules fixed-resource operations after firing and before 400.")
+        sb.AppendLine("- PostFiring400Plus schedules generic-resource operations from 400 onward after the latest release boundary.")
         sb.AppendLine("- Only unscheduled operations should be selected by optimizers.")
         sb.AppendLine("- WIP must be considered across all operations.").AppendLine()
         sb.AppendLine("## Files in this debug package")
@@ -78,7 +80,7 @@ Public Class SchedulerGptProblemStatementBuilder
             {"runId", debug.RunId},
             {"exportedAt", debug.ExportedAt.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)},
             {"files", Files},
-            {"stages", New String() {"Pressing", "Drying", "BatchFiring", "TunnelFiring", "SWK", "PostFiring"}},
+            {"stages", New String() {"Pressing", "Drying", "BatchFiring", "TunnelFiring", "SWK", "FiringFollowOn", "PostFiring400Plus"}},
             {"questionsForGpt", Questions}
         }
         Dim serializer As New JavaScriptSerializer()

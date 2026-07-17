@@ -15,7 +15,170 @@ Imports System.Linq
 <ComVisible(True)>
 <Microsoft.VisualBasic.ComClass("4196dd4d-4e89-45a5-9ca5-4fc6dcf10308", "ef5b2382-ab81-47a5-9c8d-0826dcc85a0a")>
 Public Class AlgoSeq4
+    Private Const FIRING_BLOCK_END_OP_NO As Integer = 310
+    Private Const FOLLOWON_START_OP_NO As Integer = 320
+    Private Const FOLLOWON_END_EXCLUSIVE_OP_NO As Integer = 400
+    Private Const POSTFIRING_START_OP_NO As Integer = 400
+
     Private _schedulerDebug As SchedulerDebugCollector
+
+    Public Function ActualSchedule(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+
+        Dim ordersTable As Integer
+        Dim opRec As Integer
+        Dim ResRec As Integer
+        Dim ResRecs As IEnumerable(Of Integer)
+        Dim opTimes As Nullable(Of Preactor.OperationTimes)
+
+        ordersTable = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        opRec = 0
+        Dim toggleattribute1Value As Boolean
+        Dim toggleattribute1Field As Integer = preactor.GetFieldNumber(ordersTable, "Toggle Attribute 1")
+        Dim reccount As Integer = preactor.RecordCount(ordersTable)
+        opRec = 1
+        ' Inner loop: schedule this operation and then walk to subsequent operations
+        ' (your "family" / routing chain) using GetNextOperation.
+        While (opRec > 0 AndAlso opRec <= reccount)
+            toggleattribute1Value = preactor.ReadFieldBool(ordersTable, toggleattribute1Field, opRec)
+            If toggleattribute1Value = False Then
+                opRec += 1
+                Continue While
+            End If
+            ' Find all valid alternate resources for this operation.
+            ResRecs = planningboard.FindResources(opRec)
+
+            ' Track the best (earliest) feasible candidate we find.
+            Dim bestResRec As Integer = 0
+            Dim bestOpTimes As Nullable(Of Preactor.OperationTimes) = Nothing
+
+            ' Loop through *all* alternate resources and test feasibility on each.
+            For Each ResRec In ResRecs
+
+                ' Test if the operation can be placed on this resource, and get the timing result.
+                ' TerminatorTime is the boundary between schedule history and schedule future;
+                ' using it here aligns with "schedule as soon as possible" in the future horizon. :contentReference[oaicite:3]{index=3}
+                opTimes = planningboard.TestOperationOnResource(opRec, ResRec, planningboard.TerminatorTime)
+
+                If opTimes.HasValue Then
+                    ' This resource is feasible. Compare it to the current best candidate.
+                    ' We want the earliest possible start time (ChangeStart).
+                    If (Not bestOpTimes.HasValue) Then
+                        ' First feasible candidate becomes the best by default.
+                        bestResRec = ResRec
+                        bestOpTimes = opTimes
+                    Else
+                        ' Replace best candidate if this one starts earlier.
+                        If opTimes.Value.ChangeStart < bestOpTimes.Value.ChangeStart Then
+                            bestResRec = ResRec
+                            bestOpTimes = opTimes
+                        End If
+                    End If
+                End If
+
+            Next ' evaluate next alternate resource
+
+            ' After scanning all alternates:
+            If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
+                ' Load the operation onto the resource that gives the earliest feasible start.
+                planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
+            Else
+                ' No feasible resource was found.
+                ' Practical meaning:
+                '   - This operation cannot be scheduled on any alternate resource at/after the terminator boundary
+                '     under current constraints (calendars, setups, secondary constraints, etc.).
+                ' Leave it unscheduled (or handle with a custom queue / reason code if your design requires).
+            End If
+
+            ' Move to the next operation in the routing chain.
+            'opRec = planningboard.GetNextOperation(opRec, 1) ' API-supported routing traversal:contentReference[oaicite:4]{index=4}
+            opRec += 1
+        End While ' next operation in chain
+
+        preactor.DestroyStatus()
+        Return 0
+    End Function
+
+    Public Function Schedule400(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+
+        Dim ordersTable As Integer
+        Dim opRec As Integer
+        Dim ResRec As Integer
+        Dim ResRecs As IEnumerable(Of Integer)
+        Dim opTimes As Nullable(Of Preactor.OperationTimes)
+
+        ordersTable = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        opRec = 0
+        Dim opNoValue As Integer
+        Dim OpNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
+        Dim reccount As Integer = preactor.RecordCount(ordersTable)
+        opRec = 1
+        ' Inner loop: schedule this operation and then walk to subsequent operations
+        ' (your "family" / routing chain) using GetNextOperation.
+        While (opRec > 0 AndAlso opRec <= reccount)
+            opNoValue = preactor.ReadFieldInt(ordersTable, OpNoField, opRec)
+            If opNoValue < 400 Then
+                opRec += 1
+                Continue While
+            End If
+            ' Find all valid alternate resources for this operation.
+            ResRecs = planningboard.FindResources(opRec)
+
+            ' Track the best (earliest) feasible candidate we find.
+            Dim bestResRec As Integer = 0
+            Dim bestOpTimes As Nullable(Of Preactor.OperationTimes) = Nothing
+
+            ' Loop through *all* alternate resources and test feasibility on each.
+            For Each ResRec In ResRecs
+
+                ' Test if the operation can be placed on this resource, and get the timing result.
+                ' TerminatorTime is the boundary between schedule history and schedule future;
+                ' using it here aligns with "schedule as soon as possible" in the future horizon. :contentReference[oaicite:3]{index=3}
+                opTimes = planningboard.TestOperationOnResource(opRec, ResRec, planningboard.TerminatorTime)
+
+                If opTimes.HasValue Then
+                    ' This resource is feasible. Compare it to the current best candidate.
+                    ' We want the earliest possible start time (ChangeStart).
+                    If (Not bestOpTimes.HasValue) Then
+                        ' First feasible candidate becomes the best by default.
+                        bestResRec = ResRec
+                        bestOpTimes = opTimes
+                    Else
+                        ' Replace best candidate if this one starts earlier.
+                        If opTimes.Value.ChangeStart < bestOpTimes.Value.ChangeStart Then
+                            bestResRec = ResRec
+                            bestOpTimes = opTimes
+                        End If
+                    End If
+                End If
+
+            Next ' evaluate next alternate resource
+
+            ' After scanning all alternates:
+            If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
+                ' Load the operation onto the resource that gives the earliest feasible start.
+                planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
+            Else
+                ' No feasible resource was found.
+                ' Practical meaning:
+                '   - This operation cannot be scheduled on any alternate resource at/after the terminator boundary
+                '     under current constraints (calendars, setups, secondary constraints, etc.).
+                ' Leave it unscheduled (or handle with a custom queue / reason code if your design requires).
+            End If
+
+            ' Move to the next operation in the routing chain.
+            'opRec = planningboard.GetNextOperation(opRec, 1) ' API-supported routing traversal:contentReference[oaicite:4]{index=4}
+            opRec += 1
+        End While ' next operation in chain
+
+        preactor.DestroyStatus()
+        Return 0
+    End Function
+
+
 
     Public Function runFiring(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         ' Batch firing logic
@@ -139,9 +302,9 @@ Public Class AlgoSeq4
                                              operationRows,
                                              firingOpRec,
                                              batchEnd,
-                                             New Integer() {ULDBICK, PREINSPC, KILNACK},
-                                             New Double() {0, 2, 0},
-                                             New String() {"BatchUnloading", "PostFiring", "PostFiring"})
+                                             New Integer() {ULDBICK},
+                                             New Double() {0},
+                                             New String() {"BatchUnloading"})
         Next
 
         FinishSchedulerDebug(preactor)
@@ -279,9 +442,9 @@ Public Class AlgoSeq4
                                              operationRows,
                                              firingOpRec,
                                              batchEnd,
-                                             New Integer() {ULDSW, PREINSPC, KILNACK},
-                                             New Double() {0, 1, 0},
-                                             New String() {"SWKUnloading", "PostFiring", "PostFiring"})
+                                             New Integer() {ULDSW},
+                                             New Double() {0},
+                                             New String() {"SWKUnloading"})
 
         Next
 
@@ -385,27 +548,145 @@ Public Class AlgoSeq4
                                              operationRows,
                                              firingOpRec,
                                              batchStartOffset,
-                                             New Integer() {ULDPTK, FTDSD20, PREINSPC, KILNACK},
-                                             New Double() {0, 0, 1, 0},
-                                             New String() {"TunnelUnloading", "PostFiring", "PostFiring", "PostFiring"},
-                                             New Integer() {0, 320, 0, 0})
+                                             New Integer() {ULDPTK},
+                                             New Double() {0},
+                                             New String() {"TunnelUnloading"})
         Next
-
-        ScheduleTunnelReleasedContinuations(preactor,
-                                            planningboard,
-                                            ordersTable,
-                                            opNoField,
-                                            operationRows,
-                                            routingDt,
-                                            currentDate,
-                                            ULDPTK,
-                                            FTDSD20,
-                                            PREINSPC,
-                                            KILNACK)
 
         FinishSchedulerDebug(preactor)
         preactor.DestroyStatus()
         Return 0
+    End Function
+
+    Public Function runFiringFollowOn(ByRef preactorComObject As PreactorObj,
+                                      ByRef pespComObject As Object) As Integer
+
+        Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        BeginSchedulerDebug(preactor)
+        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
+
+        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
+        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
+
+        Dim routingDt As DataTable = readOrderTable(preactor)
+        Dim operationRows As Dictionary(Of Integer, DataRow) =
+            SharedHelpers.BuildOperationRowIndex(routingDt)
+
+        Dim PREINSPC As Integer = planningboard.GetResourceNumber("PREINSPC")
+        Dim KILNACK As Integer = planningboard.GetResourceNumber("KILNACK")
+        Dim FTDSD20 As Integer = planningboard.GetResourceNumber("FTDSD20")
+
+        Dim boundaries As List(Of SharedHelpers.ReleaseBoundaryInfo) =
+            SharedHelpers.BuildLatestReleaseBoundaries(routingDt) _
+                .OrderByDescending(Function(x) x.WipScore) _
+                .ThenBy(Function(x) x.ReleaseTime) _
+                .ThenBy(Function(x) x.ParentRecord) _
+                .ThenBy(Function(x) x.OpNo) _
+                .ToList()
+
+        If boundaries.Count = 0 AndAlso _schedulerDebug IsNot Nothing AndAlso _schedulerDebug.Enabled Then
+            _schedulerDebug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+                .OptimizerName = "FiringFollowOn",
+                .Stage = "FiringFollowOn",
+                .StepName = "LatestReleaseBoundary",
+                .OrderNo = "",
+                .ParentRecordNo = 0,
+                .RecordNo = 0,
+                .OperationNumber = 0,
+                .BeforeCount = routingDt.Rows.Count,
+                .AfterCount = 0,
+                .Included = False,
+                .ReasonCode = SchedulerDebugReasonCodes.FOLLOWON_NO_RELEASE_BOUNDARY,
+                .ReasonDetail = "No operation_releases_next boundary with valid operation_release_time was found.",
+                .RankScore = 0,
+                .RankBreakdown = ""
+            })
+        End If
+
+        For Each boundary As SharedHelpers.ReleaseBoundaryInfo In boundaries
+
+            TraceFiringFollowOnBoundary(boundary,
+                                        True,
+                                        SchedulerDebugReasonCodes.OK_INCLUDED,
+                                        "Latest completed/released boundary selected for firing follow-on.")
+
+            If boundary.OpNo >= FOLLOWON_END_EXCLUSIVE_OP_NO Then
+                TraceFiringFollowOnBoundary(boundary,
+                                            False,
+                                            SchedulerDebugReasonCodes.FOLLOWON_NEXT_OUTSIDE_RANGE,
+                                            "Latest boundary is already at or beyond the follow-on range.")
+                Continue For
+            End If
+
+            Dim nextOp As Integer = planningboard.GetNextOperation(boundary.OpRec, 1)
+            If nextOp <= 0 Then
+                TraceFiringFollowOnBoundary(boundary,
+                                            False,
+                                            SchedulerDebugReasonCodes.FOLLOWON_NO_NEXT_OPERATION,
+                                            "Released boundary has no next operation in the live planning-board chain.")
+                Continue For
+            End If
+
+            Dim kilnType As Integer = GetBoundaryKilnType(routingDt, boundary)
+            Dim stageResourceRecs As Integer() = Nothing
+            Dim stageStartOffsetDays As Double() = Nothing
+            Dim stageRequiredOpNos As Integer() = Nothing
+            Dim startStageIndex As Integer = 0
+
+            Select Case kilnType
+                Case 1
+                    stageResourceRecs = New Integer() {PREINSPC, KILNACK}
+                    stageStartOffsetDays = New Double() {2, 0}
+                    stageRequiredOpNos = New Integer() {0, 0}
+                    startStageIndex = GetBatchOrSwkFollowOnStartStageIndex(boundary.OpNo)
+                Case 2
+                    stageResourceRecs = New Integer() {FTDSD20, PREINSPC, KILNACK}
+                    stageStartOffsetDays = New Double() {0, 1, 0}
+                    stageRequiredOpNos = New Integer() {320, 0, 0}
+                    startStageIndex = GetTunnelFollowOnStartStageIndex(boundary.OpNo)
+                Case 3
+                    stageResourceRecs = New Integer() {PREINSPC, KILNACK}
+                    stageStartOffsetDays = New Double() {1, 0}
+                    stageRequiredOpNos = New Integer() {0, 0}
+                    startStageIndex = GetBatchOrSwkFollowOnStartStageIndex(boundary.OpNo)
+                Case Else
+                    TraceFiringFollowOnBoundary(boundary,
+                                                False,
+                                                SchedulerDebugReasonCodes.FOLLOWON_UNKNOWN_FIRING_TYPE,
+                                                "Could not determine Batch/Tunnel/SWK kiln type for follow-on resource selection.")
+                    Continue For
+            End Select
+
+            If startStageIndex < 0 OrElse startStageIndex >= stageResourceRecs.Length Then
+                TraceFiringFollowOnBoundary(boundary,
+                                            False,
+                                            SchedulerDebugReasonCodes.FOLLOWON_NEXT_OUTSIDE_RANGE,
+                                            "Released boundary does not have a remaining fixed-resource follow-on stage.")
+                Continue For
+            End If
+
+            ScheduleAdjacentPostFiringStages(preactor,
+                                             planningboard,
+                                             ordersTable,
+                                             opNoField,
+                                             operationRows,
+                                             boundary.OpRec,
+                                             boundary.ReleaseTime,
+                                             stageResourceRecs,
+                                             stageStartOffsetDays,
+                                             Enumerable.Repeat("FiringFollowOn", stageResourceRecs.Length).ToArray(),
+                                             stageRequiredOpNos,
+                                             startStageIndex,
+                                             traceFollowOn:=True,
+                                             minOpNoInclusive:=FOLLOWON_START_OP_NO,
+                                             maxOpNoExclusive:=FOLLOWON_END_EXCLUSIVE_OP_NO)
+
+        Next
+
+        FinishSchedulerDebug(preactor)
+        preactor.DestroyStatus()
+        Return 0
+
     End Function
 
     Public Function runFix(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
@@ -932,7 +1213,10 @@ Public Class AlgoSeq4
                                                  stageNames As String(),
                                                  Optional stageRequiredOpNos As Integer() = Nothing,
                                                  Optional startStageIndex As Integer = 0,
-                                                 Optional traceTunnelContinuation As Boolean = False)
+                                                 Optional traceTunnelContinuation As Boolean = False,
+                                                 Optional traceFollowOn As Boolean = False,
+                                                 Optional minOpNoInclusive As Integer = 0,
+                                                 Optional maxOpNoExclusive As Integer = Integer.MaxValue)
 
         If stageResourceRecs Is Nothing OrElse stageResourceRecs.Length = 0 Then Return
 
@@ -943,6 +1227,24 @@ Public Class AlgoSeq4
 
             Dim currentStageIndex As Integer = stageIndex
             stageIndex += 1
+            Dim liveOpNo As Integer =
+                preactor.ReadFieldInt(ordersTable, opNoField, nextOp)
+
+            If maxOpNoExclusive <> Integer.MaxValue AndAlso
+               liveOpNo >= maxOpNoExclusive Then
+
+                If traceFollowOn Then
+                    TraceFiringFollowOnOperation(planningboard,
+                                                 nextOp,
+                                                 False,
+                                                 SchedulerDebugReasonCodes.FOLLOWON_NEXT_OUTSIDE_RANGE,
+                                                 "Next operation is outside the follow-on range; stopping traversal.",
+                                                 resourceRec:=0,
+                                                 requestedStart:=testFrom)
+                End If
+
+                Exit While
+            End If
 
             Dim requiredOpNo As Integer = 0
             If stageRequiredOpNos IsNot Nothing AndAlso
@@ -953,9 +1255,6 @@ Public Class AlgoSeq4
             End If
 
             If requiredOpNo > 0 Then
-                Dim liveOpNo As Integer =
-                    preactor.ReadFieldInt(ordersTable, opNoField, nextOp)
-
                 If liveOpNo <> requiredOpNo Then
                     If traceTunnelContinuation Then
                         TraceTunnelContinuationOperation(planningboard,
@@ -968,6 +1267,15 @@ Public Class AlgoSeq4
                                                          "; advancing to next stage without consuming this operation.",
                                                          resourceRec:=0,
                                                          requestedStart:=testFrom)
+                    End If
+                    If traceFollowOn Then
+                        TraceFiringFollowOnOperation(planningboard,
+                                                     nextOp,
+                                                     False,
+                                                     SchedulerDebugReasonCodes.FOLLOWON_REQUIRED_OP_NOT_PRESENT,
+                                                     "Required operation number is not present for this fixed-resource stage; advancing to next stage without consuming this operation.",
+                                                     resourceRec:=0,
+                                                     requestedStart:=testFrom)
                     End If
                     Continue While
                 End If
@@ -992,6 +1300,16 @@ Public Class AlgoSeq4
                                                      resourceRec:=0,
                                                      requestedStart:=testFrom)
                 End If
+                If traceFollowOn Then
+                    TraceFiringFollowOnOperation(planningboard,
+                                                 nextOp,
+                                                 False,
+                                                 SchedulerDebugReasonCodes.FOLLOWON_NEXT_ALREADY_SCHEDULED,
+                                                 "Next operation is already scheduled; release/test time advanced to " &
+                                                 FormatDateForTrace(testFrom) & ".",
+                                                 resourceRec:=0,
+                                                 requestedStart:=testFrom)
+                End If
 
                 nextOp = planningboard.GetNextOperation(nextOp, 1)
                 Continue While
@@ -1015,10 +1333,33 @@ Public Class AlgoSeq4
                                                      resourceRec:=0,
                                                      requestedStart:=testFrom)
                 End If
+                If traceFollowOn Then
+                    TraceFiringFollowOnOperation(planningboard,
+                                                 nextOp,
+                                                 False,
+                                                 SchedulerDebugReasonCodes.FOLLOWON_NEXT_COMPLETED,
+                                                 "Next operation is completed/actualized; release/test time advanced to " &
+                                                 FormatDateForTrace(testFrom) & ".",
+                                                 resourceRec:=0,
+                                                 requestedStart:=testFrom)
+                End If
 
                 nextOp = planningboard.GetNextOperation(nextOp, 1)
                 Continue While
 
+            End If
+
+            If minOpNoInclusive > 0 AndAlso liveOpNo < minOpNoInclusive Then
+                If traceFollowOn Then
+                    TraceFiringFollowOnOperation(planningboard,
+                                                 nextOp,
+                                                 False,
+                                                 SchedulerDebugReasonCodes.FOLLOWON_NEXT_BELOW_RANGE_BLOCKED,
+                                                 "First pending operation is below the follow-on range, so this scheduler cannot release later operations.",
+                                                 resourceRec:=0,
+                                                 requestedStart:=testFrom)
+                End If
+                Exit While
             End If
 
             Dim resourceRec As Integer = stageResourceRecs(currentStageIndex)
@@ -1032,6 +1373,16 @@ Public Class AlgoSeq4
                                                      currentStageIndex.ToString(CultureInfo.InvariantCulture) & ".",
                                                      resourceRec:=resourceRec,
                                                      requestedStart:=testFrom)
+                End If
+                If traceFollowOn Then
+                    TraceFiringFollowOnOperation(planningboard,
+                                                 nextOp,
+                                                 False,
+                                                 SchedulerDebugReasonCodes.FOLLOWON_NO_FEASIBLE_RESOURCE,
+                                                 "Stage resource is missing for StageIndex=" &
+                                                 currentStageIndex.ToString(CultureInfo.InvariantCulture) & ".",
+                                                 resourceRec:=resourceRec,
+                                                 requestedStart:=testFrom)
                 End If
                 Exit While
             End If
@@ -1055,6 +1406,16 @@ Public Class AlgoSeq4
                                                          FormatDateForTrace(testFrom) & ".",
                                                          resourceRec:=resourceRec,
                                                          requestedStart:=testFrom)
+                    End If
+                    If traceFollowOn Then
+                        TraceFiringFollowOnOperation(planningboard,
+                                                     nextOp,
+                                                     False,
+                                                     SchedulerDebugReasonCodes.FOLLOWON_NO_FEASIBLE_RESOURCE,
+                                                     "No feasible placement on requested resource from " &
+                                                     FormatDateForTrace(testFrom) & ".",
+                                                     resourceRec:=resourceRec,
+                                                     requestedStart:=testFrom)
                     End If
                     Exit While
                 End If
@@ -1084,6 +1445,15 @@ Public Class AlgoSeq4
                                                      "Scheduled by tunnel continuation.",
                                                      resourceRec:=resourceRec,
                                                      requestedStart:=startTime)
+                End If
+                If traceFollowOn Then
+                    TraceFiringFollowOnOperation(planningboard,
+                                                 nextOp,
+                                                 True,
+                                                 SchedulerDebugReasonCodes.OK_SCHEDULED,
+                                                 "Scheduled by firing follow-on.",
+                                                 resourceRec:=resourceRec,
+                                                 requestedStart:=startTime)
                 End If
 
                 Dim scheduledEnd As DateTime =
@@ -1183,6 +1553,111 @@ Public Class AlgoSeq4
         Return SharedHelpers.GetTunnelContinuationStartStageIndex(opNo)
 
     End Function
+
+    Private Function GetTunnelFollowOnStartStageIndex(opNo As Integer) As Integer
+
+        Select Case opNo
+            Case Is < FOLLOWON_START_OP_NO
+                Return 0
+            Case 320
+                Return 1
+            Case 390
+                Return 2
+            Case Is >= 395
+                Return 3
+            Case Else
+                Return 1
+        End Select
+
+    End Function
+
+    Private Function GetBatchOrSwkFollowOnStartStageIndex(opNo As Integer) As Integer
+
+        Select Case opNo
+            Case Is < FOLLOWON_START_OP_NO
+                Return 0
+            Case Is < 395
+                Return 1
+            Case Else
+                Return 2
+        End Select
+
+    End Function
+
+    Private Function GetBoundaryKilnType(routingDt As DataTable,
+                                         boundary As SharedHelpers.ReleaseBoundaryInfo) As Integer
+
+        If routingDt Is Nothing OrElse boundary Is Nothing Then Return 0
+
+        Dim fallbackKilnType As Integer = 0
+
+        For Each row As DataRow In routingDt.Rows
+
+            If Not IsSameBoundaryOrder(row, boundary) Then Continue For
+
+            Dim kilnType As Integer = SharedHelpers.SafeInt(row("Kiln Type"))
+            If kilnType <= 0 Then Continue For
+
+            If SharedHelpers.SafeInt(row("Operation Number")) = 300 Then
+                Return kilnType
+            End If
+
+            If fallbackKilnType = 0 Then fallbackKilnType = kilnType
+
+        Next
+
+        Return fallbackKilnType
+
+    End Function
+
+    Private Function IsSameBoundaryOrder(row As DataRow,
+                                         boundary As SharedHelpers.ReleaseBoundaryInfo) As Boolean
+
+        If row Is Nothing OrElse boundary Is Nothing Then Return False
+
+        If boundary.ParentRecord > 0 Then
+            Return SharedHelpers.GetEffectiveParentRecord(row) = boundary.ParentRecord
+        End If
+
+        If Not String.IsNullOrWhiteSpace(boundary.OrderNo) Then
+            Return SharedHelpers.SafeStr(row("Order No")).Trim().Equals(boundary.OrderNo,
+                                                                        StringComparison.OrdinalIgnoreCase)
+        End If
+
+        Return SharedHelpers.SafeInt(row("OrdersID")) = boundary.OpRec
+
+    End Function
+
+    Private Sub TraceFiringFollowOnBoundary(boundary As SharedHelpers.ReleaseBoundaryInfo,
+                                            included As Boolean,
+                                            reasonCode As String,
+                                            reasonDetail As String)
+
+        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Enabled Then Return
+        If boundary Is Nothing Then Return
+
+        _schedulerDebug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+            .OptimizerName = "FiringFollowOn",
+            .Stage = "FiringFollowOn",
+            .StepName = "LatestReleaseBoundary",
+            .OrderNo = boundary.OrderNo,
+            .ParentRecordNo = boundary.ParentRecord,
+            .RecordNo = boundary.OpRec,
+            .OperationNumber = boundary.OpNo,
+            .BeforeCount = 0,
+            .AfterCount = 0,
+            .Included = included,
+            .ReasonCode = reasonCode,
+            .ReasonDetail = reasonDetail &
+                            " GroupKey=" & boundary.GroupKey &
+                            "; ReleasedOpRec=" & boundary.OpRec.ToString(CultureInfo.InvariantCulture) &
+                            "; ReleasedOpNo=" & boundary.OpNo.ToString(CultureInfo.InvariantCulture) &
+                            "; ReleaseTime=" & FormatDateForTrace(boundary.ReleaseTime) & ".",
+            .RankScore = boundary.WipScore,
+            .RankBreakdown = ""
+        })
+
+    End Sub
 
     Private Sub TraceTunnelContinuationSourceRows(routingDt As DataTable)
 
@@ -1295,6 +1770,53 @@ Public Class AlgoSeq4
         _schedulerDebug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
             .OptimizerName = "TunnelContinuation",
             .Stage = "TunnelContinuation",
+            .StepName = "NextOperationTraversal",
+            .OrderNo = If(snapshot Is Nothing, "", snapshot.OrderNo),
+            .ParentRecordNo = If(snapshot Is Nothing, 0, snapshot.ParentRecordNo),
+            .RecordNo = opRec,
+            .OperationNumber = If(snapshot Is Nothing, 0, snapshot.OperationNumber),
+            .BeforeCount = 0,
+            .AfterCount = 0,
+            .Included = included,
+            .ReasonCode = reasonCode,
+            .ReasonDetail = detail,
+            .RankScore = 0,
+            .RankBreakdown = ""
+        })
+
+    End Sub
+
+    Private Sub TraceFiringFollowOnOperation(planningboard As IPlanningBoard,
+                                             opRec As Integer,
+                                             included As Boolean,
+                                             reasonCode As String,
+                                             reasonDetail As String,
+                                             resourceRec As Integer,
+                                             requestedStart As DateTime)
+
+        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Enabled Then Return
+
+        Dim snapshot As OperationSnapshot = _schedulerDebug.FindOperationSnapshot(opRec)
+        Dim nextOpRec As Integer = 0
+        Dim nextOpNo As Integer = 0
+
+        Try
+            nextOpRec = planningboard.GetNextOperation(opRec, 1)
+            Dim nextSnapshot As OperationSnapshot = _schedulerDebug.FindOperationSnapshot(nextOpRec)
+            If nextSnapshot IsNot Nothing Then nextOpNo = nextSnapshot.OperationNumber
+        Catch
+            nextOpRec = 0
+        End Try
+
+        Dim detail As String = reasonDetail &
+            " NextOpRec=" & nextOpRec.ToString(CultureInfo.InvariantCulture) &
+            "; NextOpNo=" & nextOpNo.ToString(CultureInfo.InvariantCulture) &
+            "; RequestedResource=" & resourceRec.ToString(CultureInfo.InvariantCulture) &
+            "; RequestedStart=" & FormatDateForTrace(requestedStart) & "."
+
+        _schedulerDebug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+            .OptimizerName = "FiringFollowOn",
+            .Stage = "FiringFollowOn",
             .StepName = "NextOperationTraversal",
             .OrderNo = If(snapshot Is Nothing, "", snapshot.OrderNo),
             .ParentRecordNo = If(snapshot Is Nothing, 0, snapshot.ParentRecordNo),

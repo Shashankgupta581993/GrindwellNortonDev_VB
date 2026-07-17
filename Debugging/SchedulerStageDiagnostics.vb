@@ -151,7 +151,10 @@ Public Class SchedulerStageDiagnostics
         DiagnoseFiring(snapshot, debug, "SWK", Function(k) IsKiln(k, "SWK", "3"))
     End Sub
     Public Shared Sub DiagnosePostFiringEligibility(snapshot As List(Of OperationSnapshot), debug As SchedulerDebugCollector)
-        DiagnoseSimpleStage(snapshot.Where(Function(x) x.OperationNumber >= 380), debug, "PostFiring", True, False)
+        DiagnoseSimpleStage(snapshot.Where(Function(x) x.OperationNumber >= 320 AndAlso x.OperationNumber < 400),
+                            debug, "FiringFollowOn", True, False)
+        DiagnoseSimpleStage(snapshot.Where(Function(x) x.OperationNumber >= 400),
+                            debug, "PostFiring400Plus", True, False)
     End Sub
 
     Public Shared Sub DiagnoseAll(snapshot As List(Of OperationSnapshot), debug As SchedulerDebugCollector)
@@ -175,9 +178,9 @@ Public Class SchedulerStageDiagnostics
             If op.IsScheduled Then
                 candidate = False : code = SchedulerDebugReasonCodes.OK_ALREADY_SCHEDULED : detail = "Already scheduled."
             ElseIf requirePrevious AndAlso op.PrevOperationRecordNo > 0 AndAlso Not op.PrevOperationIsScheduled Then
-                candidate = False : code = If(stage = "PostFiring", SchedulerDebugReasonCodes.POSTFIRING_PREV_OP_NOT_READY, SchedulerDebugReasonCodes.PRESSING_PREV_OP_NOT_READY) : detail = "Previous operation is not ready."
+                candidate = False : code = If(stage = "PostFiring400Plus", SchedulerDebugReasonCodes.POSTFIRING_PREV_OP_NOT_READY, SchedulerDebugReasonCodes.PRESSING_PREV_OP_NOT_READY) : detail = "Previous operation is not ready."
             ElseIf String.IsNullOrWhiteSpace(op.RequiredResource) AndAlso String.IsNullOrWhiteSpace(op.ResourceGroup) Then
-                candidate = False : code = If(stage = "PostFiring", SchedulerDebugReasonCodes.POSTFIRING_RESOURCE_MISSING, SchedulerDebugReasonCodes.DATA_MISSING_REQUIRED_RESOURCE) : detail = "Required Resource and Resource Group are blank."
+                candidate = False : code = If(stage = "PostFiring400Plus", SchedulerDebugReasonCodes.POSTFIRING_RESOURCE_MISSING, SchedulerDebugReasonCodes.DATA_MISSING_REQUIRED_RESOURCE) : detail = "Required Resource and Resource Group are blank."
             ElseIf requirePressAttributes AndAlso String.IsNullOrWhiteSpace(op.WheelDia) Then
                 candidate = False : code = SchedulerDebugReasonCodes.DATA_MISSING_OPERATION : detail = "Wheel Dia is blank."
             ElseIf requirePressAttributes AndAlso String.IsNullOrWhiteSpace(op.WheelThickness) Then

@@ -741,6 +741,16 @@ Public Module SharedHelpers
         Public Property StartStageIndex As Integer
     End Class
 
+    Public Class ReleaseBoundaryInfo
+        Public Property GroupKey As String
+        Public Property ParentRecord As Integer
+        Public Property OrderNo As String
+        Public Property OpRec As Integer
+        Public Property OpNo As Integer
+        Public Property ReleaseTime As DateTime
+        Public Property WipScore As Integer
+    End Class
+
     Public Function BuildTunnelOrderLookup(dt As DataTable) As Dictionary(Of String, Boolean)
 
         Dim result As New Dictionary(Of String, Boolean)(StringComparer.OrdinalIgnoreCase)
@@ -768,6 +778,54 @@ Public Module SharedHelpers
         Next
 
         Return False
+
+    End Function
+
+    Public Function BuildLatestReleaseBoundaries(dt As DataTable) _
+        As List(Of ReleaseBoundaryInfo)
+
+        Dim result As New List(Of ReleaseBoundaryInfo)()
+        If dt Is Nothing Then Return result
+
+        Dim latestByGroup As New Dictionary(Of String, ReleaseBoundaryInfo)(
+            StringComparer.OrdinalIgnoreCase)
+
+        For Each row As DataRow In dt.Rows
+
+            If Not SafeBool(row("operation_releases_next")) Then Continue For
+
+            Dim opRec As Integer = SafeInt(row("OrdersID"))
+            Dim opNo As Integer = SafeInt(row("Operation Number"))
+            Dim releaseTime As DateTime = SafeDate(row("operation_release_time"))
+            If opRec <= 0 OrElse opNo <= 0 Then Continue For
+            If releaseTime = DateTime.MinValue Then Continue For
+
+            Dim groupKey As String = GetPreferredReleaseBoundaryKey(row)
+            If groupKey = "" Then Continue For
+
+            Dim candidate As New ReleaseBoundaryInfo With {
+                .GroupKey = groupKey,
+                .ParentRecord = GetEffectiveParentRecord(row),
+                .OrderNo = SafeStr(row("Order No")).Trim(),
+                .OpRec = opRec,
+                .OpNo = opNo,
+                .ReleaseTime = releaseTime,
+                .WipScore = SafeInt(row("wip_score"))
+            }
+
+            Dim existing As ReleaseBoundaryInfo = Nothing
+            If latestByGroup.TryGetValue(groupKey, existing) Then
+                If candidate.OpNo < existing.OpNo Then Continue For
+                If candidate.OpNo = existing.OpNo AndAlso
+                   candidate.ReleaseTime <= existing.ReleaseTime Then Continue For
+            End If
+
+            latestByGroup(groupKey) = candidate
+
+        Next
+
+        result.AddRange(latestByGroup.Values)
+        Return result
 
     End Function
 
@@ -842,6 +900,23 @@ Public Module SharedHelpers
     End Function
 
     Private Function GetPreferredTunnelOrderKey(row As DataRow) As String
+
+        Dim parentRecord As Integer = GetEffectiveParentRecord(row)
+        If parentRecord > 0 Then
+            Return "P:" & parentRecord.ToString(CultureInfo.InvariantCulture)
+        End If
+
+        Dim orderNo As String = SafeStr(row("Order No")).Trim()
+        If orderNo <> "" Then Return "O:" & orderNo
+
+        Dim opRec As Integer = SafeInt(row("OrdersID"))
+        If opRec > 0 Then Return "R:" & opRec.ToString(CultureInfo.InvariantCulture)
+
+        Return ""
+
+    End Function
+
+    Private Function GetPreferredReleaseBoundaryKey(row As DataRow) As String
 
         Dim parentRecord As Integer = GetEffectiveParentRecord(row)
         If parentRecord > 0 Then
