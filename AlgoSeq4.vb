@@ -284,6 +284,7 @@ Public Class AlgoSeq4
                 Not planningboard.IsOperationScheduled(PREVIOUSOP) AndAlso
                 Not SharedHelpers.IsCompletedOrActualizedOp(operationRows, PREVIOUSOP) Then
                 Try
+
                     Times = planningboard.BackTestOpOnResource(PREVIOUSOP, LOADBICK, batchStart)
                     If Times.HasValue Then
                         PutOperationWithTrace(preactor, planningboard, "BatchLoading", PREVIOUSOP, LOADBICK, Times.Value.ProcessStart, "Backward")
