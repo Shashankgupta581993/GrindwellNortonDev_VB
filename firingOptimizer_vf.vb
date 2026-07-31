@@ -63,7 +63,7 @@ Public Class firingOptimizer_vf
 
     ' Entry point:
     ' dt: your schedule export (DataTable)
-    ' kilnCsvPath: /mnt/data/kilndata.csv (or local path)
+    ' kilnCsvPath: caller-supplied Opcenter/configured kiln matrix path
     ' startTime: "now" for kiln availability baseline
     ' minOcc/maxOcc: parameterized occupancy range
     ' allowUnderfilledTail: if True, only when no future readiness exists, allow final underfilled legal batches

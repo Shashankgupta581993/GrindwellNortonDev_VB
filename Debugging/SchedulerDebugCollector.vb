@@ -13,6 +13,7 @@ Public Class SchedulerDebugCollector
     Public ReadOnly Property RunId As String
     Public ReadOnly Property ExportedAt As DateTime
     Public Property Enabled As Boolean
+    Public Property MetricsEnabled As Boolean
     Public Property ExportFolder As String
     Public FieldMapRows As New List(Of DebugFieldMapRow)
     Public OperationSnapshots As New List(Of OperationSnapshot)
@@ -22,27 +23,38 @@ Public Class SchedulerDebugCollector
     Public BatchTunnelSwkPlanTraceRows As New List(Of BatchTunnelSwkPlanTraceRow)
     Public ScheduleAttemptTraceRows As New List(Of ScheduleAttemptTraceRow)
     Public ResourceValidationRows As New List(Of ResourceValidationRow)
+    Public ActionMetricsRows As New List(Of SchedulerActionMetricsRow)
 
     Public Sub New()
         ExportedAt = DateTime.Now
         RunId = Guid.NewGuid().ToString("N")
         Enabled = IsEnabledByConfiguration()
+        MetricsEnabled = Enabled OrElse IsMetricsEnabledByConfiguration()
         ExportFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
                                     "GN_Opcenter_Debug",
                                     ExportedAt.ToString("yyyy-MM-dd_HHmmss"))
     End Sub
 
     Public Shared Function IsEnabledByConfiguration() As Boolean
+        Return ReadEnabledSetting("SchedulerDebugEnabled", "GN_SCHEDULER_DEBUG")
+    End Function
+
+    Public Shared Function IsMetricsEnabledByConfiguration() As Boolean
+        Return ReadEnabledSetting("SchedulerMetricsEnabled", "GN_SCHEDULER_METRICS")
+    End Function
+
+    Private Shared Function ReadEnabledSetting(appSettingName As String,
+                                               environmentVariableName As String) As Boolean
         Dim configuredValue As String = ""
 
         Try
-            configuredValue = ConfigurationManager.AppSettings("SchedulerDebugEnabled")
+            configuredValue = ConfigurationManager.AppSettings(appSettingName)
         Catch
             configuredValue = ""
         End Try
 
         If String.IsNullOrWhiteSpace(configuredValue) Then
-            configuredValue = Environment.GetEnvironmentVariable("GN_SCHEDULER_DEBUG")
+            configuredValue = Environment.GetEnvironmentVariable(environmentVariableName)
         End If
 
         Return IsTrue(configuredValue)
@@ -122,6 +134,11 @@ Public Class SchedulerDebugCollector
             row.RunId = RunId
             ResourceValidationRows.Add(row)
         End If
+    End Sub
+    Public Sub AddActionMetrics(row As SchedulerActionMetricsRow)
+        If row Is Nothing Then Return
+        row.RunId = RunId
+        ActionMetricsRows.Add(row)
     End Sub
     Public Sub ExportAll(preactor As IPreactor)
         SchedulerDebugExporter.ExportAll(Me, preactor)

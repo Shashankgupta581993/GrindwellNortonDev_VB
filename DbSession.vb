@@ -1,4 +1,7 @@
-﻿Imports System.Configuration
+﻿Option Strict On
+Option Explicit On
+
+Imports System.Configuration
 Imports System.Data.SqlClient
 
 Public Class DbSession
@@ -13,8 +16,9 @@ Public Class DbSession
     )
         End If
 
-        Dim baseConn = cs.ConnectionString
-        ConnectionString = baseConn & "Password=" & sqlPassword & ";"
+        Dim builder As New SqlConnectionStringBuilder(cs.ConnectionString)
+        builder.Password = If(sqlPassword, String.Empty)
+        ConnectionString = builder.ConnectionString
     End Sub
 
     Public Function OpenConnection() As SqlConnection

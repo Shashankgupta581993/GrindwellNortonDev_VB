@@ -2,6 +2,7 @@
 Option Explicit On
 
 Imports System
+Imports System.Configuration
 Imports System.Data
 Imports System.Globalization
 Imports System.IO
@@ -263,12 +264,18 @@ Public Class AlgoSeq3
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
         ' ------------------------------------------------------
-        ' 1) Load Routing.csv (for logic)
-        '    Prefer current directory; fallback to /mnt/data/Routing.csv for your testing sandbox.
+        ' 1) Load Routing.csv (for logic) from the Opcenter/configured path.
         ' ------------------------------------------------------
-        Dim csvPath As String = Path.Combine(Directory.GetCurrentDirectory(), "Routing.csv")
-        If Not File.Exists(csvPath) AndAlso File.Exists("/mnt/data/Routing.csv") Then
-            csvPath = "/mnt/data/Routing.csv"
+        Dim configuredRoutingPath As String =
+            ConfigurationManager.AppSettings("RoutingCsvPath")
+        If String.IsNullOrWhiteSpace(configuredRoutingPath) Then
+            configuredRoutingPath = "Routing.csv"
+        End If
+
+        Dim csvPath As String = configuredRoutingPath
+        If Not Path.IsPathRooted(csvPath) Then
+            csvPath = Path.Combine(preactor.ParseShellString("{PATH}"),
+                                   csvPath)
         End If
 
         Dim routing As DataTable = ReadRoutingCsv(csvPath)

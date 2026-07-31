@@ -12,7 +12,7 @@ Imports Preactor
 
 Public Class SchedulerDebugExporter
     Public Shared Sub ExportAll(debug As SchedulerDebugCollector, preactor As IPreactor)
-        If debug Is Nothing OrElse Not debug.Enabled Then Return
+        If debug Is Nothing OrElse (Not debug.Enabled AndAlso Not debug.MetricsEnabled) Then Return
         Directory.CreateDirectory(debug.ExportFolder)
 
         Dim configRows As New List(Of DebugConfigSnapshotRow) From {
@@ -22,19 +22,23 @@ Public Class SchedulerDebugExporter
         }
 
         WriteRunSummary(Path.Combine(debug.ExportFolder, "00_RunSummary.md"), debug)
-        WriteCsv(Path.Combine(debug.ExportFolder, "01_ConfigSnapshot.csv"), configRows)
-        WriteCsv(Path.Combine(debug.ExportFolder, "02_FieldMap.csv"), debug.FieldMapRows)
-        WriteCsv(Path.Combine(debug.ExportFolder, "03_OrderOperationSnapshot.csv"), debug.OperationSnapshots)
-        WriteCsv(Path.Combine(debug.ExportFolder, "04_UnscheduledOperations.csv"),
-                 debug.OperationSnapshots.Where(Function(x) Not x.IsScheduled))
-        WriteCsv(Path.Combine(debug.ExportFolder, "05_WipChainDiagnostics.csv"), debug.WipDiagnostics)
-        WriteCsv(Path.Combine(debug.ExportFolder, "06_StageEligibilityDiagnostics.csv"), debug.StageEligibilityRows)
-        WriteCsv(Path.Combine(debug.ExportFolder, "07_OptimizerCandidateTrace.csv"), debug.OptimizerCandidateTraceRows)
-        WriteCsv(Path.Combine(debug.ExportFolder, "08_BatchTunnelSwkPlanTrace.csv"), debug.BatchTunnelSwkPlanTraceRows)
-        WriteCsv(Path.Combine(debug.ExportFolder, "09_ScheduleAttemptTrace.csv"), debug.ScheduleAttemptTraceRows)
-        WriteCsv(Path.Combine(debug.ExportFolder, "10_ResourceValidation.csv"), debug.ResourceValidationRows)
-        WriteReasonSummary(Path.Combine(debug.ExportFolder, "11_ReasonCodeSummary.csv"), debug)
-        SchedulerGptProblemStatementBuilder.WriteFiles(debug)
+        WriteCsv(Path.Combine(debug.ExportFolder, "12_ActionMetrics.csv"), debug.ActionMetricsRows)
+
+        If debug.Enabled Then
+            WriteCsv(Path.Combine(debug.ExportFolder, "01_ConfigSnapshot.csv"), configRows)
+            WriteCsv(Path.Combine(debug.ExportFolder, "02_FieldMap.csv"), debug.FieldMapRows)
+            WriteCsv(Path.Combine(debug.ExportFolder, "03_OrderOperationSnapshot.csv"), debug.OperationSnapshots)
+            WriteCsv(Path.Combine(debug.ExportFolder, "04_UnscheduledOperations.csv"),
+                     debug.OperationSnapshots.Where(Function(x) Not x.IsScheduled))
+            WriteCsv(Path.Combine(debug.ExportFolder, "05_WipChainDiagnostics.csv"), debug.WipDiagnostics)
+            WriteCsv(Path.Combine(debug.ExportFolder, "06_StageEligibilityDiagnostics.csv"), debug.StageEligibilityRows)
+            WriteCsv(Path.Combine(debug.ExportFolder, "07_OptimizerCandidateTrace.csv"), debug.OptimizerCandidateTraceRows)
+            WriteCsv(Path.Combine(debug.ExportFolder, "08_BatchTunnelSwkPlanTrace.csv"), debug.BatchTunnelSwkPlanTraceRows)
+            WriteCsv(Path.Combine(debug.ExportFolder, "09_ScheduleAttemptTrace.csv"), debug.ScheduleAttemptTraceRows)
+            WriteCsv(Path.Combine(debug.ExportFolder, "10_ResourceValidation.csv"), debug.ResourceValidationRows)
+            WriteReasonSummary(Path.Combine(debug.ExportFolder, "11_ReasonCodeSummary.csv"), debug)
+            SchedulerGptProblemStatementBuilder.WriteFiles(debug)
+        End If
     End Sub
 
     Public Shared Sub WriteCsv(Of T)(filePath As String, rows As IEnumerable(Of T))
@@ -63,7 +67,8 @@ Public Class SchedulerDebugExporter
             "- WIP diagnostics: " & debug.WipDiagnostics.Count.ToString(CultureInfo.InvariantCulture) & Environment.NewLine &
             "- Stage eligibility rows: " & debug.StageEligibilityRows.Count.ToString(CultureInfo.InvariantCulture) & Environment.NewLine &
             "- Optimizer trace rows: " & debug.OptimizerCandidateTraceRows.Count.ToString(CultureInfo.InvariantCulture) & Environment.NewLine &
-            "- Schedule attempts: " & debug.ScheduleAttemptTraceRows.Count.ToString(CultureInfo.InvariantCulture) & Environment.NewLine
+            "- Schedule attempts: " & debug.ScheduleAttemptTraceRows.Count.ToString(CultureInfo.InvariantCulture) & Environment.NewLine &
+            "- Action metric rows: " & debug.ActionMetricsRows.Count.ToString(CultureInfo.InvariantCulture) & Environment.NewLine
         File.WriteAllText(filePath, text, New UTF8Encoding(False))
     End Sub
 

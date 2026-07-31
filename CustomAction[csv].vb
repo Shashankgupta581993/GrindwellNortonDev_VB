@@ -2,6 +2,7 @@
 Option Explicit On
 
 Imports System
+Imports System.Configuration
 Imports System.IO
 Imports System.Runtime.InteropServices
 Imports Microsoft.VisualBasic.FileIO
@@ -29,8 +30,7 @@ End Class
 '
 '  USER REQUIREMENTS (FOLLOWED STRICTLY):
 '   ✅ Do NOT change the logic in any way
-'   ✅ Only change the CSV-based planner to look for files in YOUR fixed folder path:
-'        D:\Documents\Opcenter\Cases\Grindwell Norton\TempTemplates
+'   ✅ Resolve the CSV base folder from application configuration.
 '   ✅ Add extensive comments
 '   ✅ Add a function to run and return outputs as DataTables (DataSet is fine too)
 '   ✅ Add a function to export the output DataTables at the end
@@ -54,10 +54,10 @@ End Class
 Public Class VitrifiedCyclePlanner_Csv
 
     ' -----------------------------------------------------------------------------
-    ' 1) FIXED BASE FOLDER (your path)
+    ' 1) CONFIGURED BASE FOLDER
     ' -----------------------------------------------------------------------------
-    ' NOTE: If later you want to make it configurable, you can change only this value.
-    Private Const BASE_FOLDER As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\TempTemplates"
+    Private Const BaseFolderSettingName As String =
+        "VitrifiedCyclePlannerBaseFolder"
 
     ' -----------------------------------------------------------------------------
     ' 2) FIXED FILE NAMES (must exist inside BASE_FOLDER)
@@ -120,15 +120,15 @@ Public Class VitrifiedCyclePlanner_Csv
         If p Is Nothing Then Throw New ArgumentNullException(NameOf(p))
 
         ' ----------------------------
-        ' Resolve full file paths from YOUR fixed folder.
-        ' This is the only behavior change requested (source location).
+        ' Resolve full file paths from the configured folder.
         ' ----------------------------
-        Dim ordersPath = Path.Combine(BASE_FOLDER, FILE_ORDERS)
-        Dim matchingPath = Path.Combine(BASE_FOLDER, FILE_MATCHING)
-        Dim capacityPath = Path.Combine(BASE_FOLDER, FILE_CAPACITY)
+        Dim baseFolder As String = ResolveBaseFolder()
+        Dim ordersPath = Path.Combine(baseFolder, FILE_ORDERS)
+        Dim matchingPath = Path.Combine(baseFolder, FILE_MATCHING)
+        Dim capacityPath = Path.Combine(baseFolder, FILE_CAPACITY)
 
         ' DayCapacity is optional
-        Dim dayCapPath As String = Path.Combine(BASE_FOLDER, FILE_DAYCAP)
+        Dim dayCapPath As String = Path.Combine(baseFolder, FILE_DAYCAP)
         If Not useDayCapacityFile Then
             dayCapPath = Nothing
         Else
@@ -150,6 +150,23 @@ Public Class VitrifiedCyclePlanner_Csv
             dayCapacityCsvPath:=dayCapPath,
             intermediateCsvPrefix:=intermediateCsvPrefix
         )
+    End Function
+
+    Private Shared Function ResolveBaseFolder() As String
+        Dim configuredFolder As String =
+            ConfigurationManager.AppSettings(BaseFolderSettingName)
+
+        If String.IsNullOrWhiteSpace(configuredFolder) Then
+            configuredFolder = "."
+        End If
+
+        If Not Path.IsPathRooted(configuredFolder) Then
+            configuredFolder =
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                             configuredFolder)
+        End If
+
+        Return Path.GetFullPath(configuredFolder)
     End Function
 
     ' =====================================================================================
@@ -873,8 +890,7 @@ End Class
 '    useDayCapacityFile:=True
 ')
 
-'' export outputs
-'vitrifiedcycleplanner_csv.exportoutputstocsv(ds, "d:\documents\opcenter\cases\grindwell norton\temptemplates\out", "testrun")
+'' Export outputs by supplying a configured or caller-selected output folder.
 
 '' access results in datatable form:
 'Dim dtheader As DataTable = ds.Tables("cycleheader")

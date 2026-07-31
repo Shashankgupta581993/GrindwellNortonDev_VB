@@ -1,4 +1,6 @@
-﻿Imports System.Data
+﻿Imports System
+Imports System.Configuration
+Imports System.Data
 Imports System.Globalization
 Imports System.IO
 Imports System.Text
@@ -16,9 +18,23 @@ Public Class CsvRoutingReader
     ' OUTPUT        : DataTable containing Routing.csv data
     '===========================================================
     Public Function ReadRoutingCsv() As DataTable
+        Return ReadRoutingCsv(Nothing)
+    End Function
 
-        ' Absolute path as per business requirement 
-        Dim filePath As String = "D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\Templates\Routing.csv"
+    Public Function ReadRoutingCsv(filePath As String) As DataTable
+        If String.IsNullOrWhiteSpace(filePath) Then
+            Dim configuredPath As String =
+                ConfigurationManager.AppSettings("RoutingCsvPath")
+            If String.IsNullOrWhiteSpace(configuredPath) Then
+                configuredPath = "Routing.csv"
+            End If
+
+            filePath = configuredPath
+            If Not Path.IsPathRooted(filePath) Then
+                filePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                                        filePath)
+            End If
+        End If
 
         ' Validate file existence
         If Not File.Exists(filePath) Then
@@ -148,8 +164,7 @@ Public Class CsvRoutingReader
 
         Next
 
-        'helper function to import process mapping
-        'Dim op_matrix = Helper.LoadFromCsv(filePath:="D:\Documents\Opcenter\Cases\Grindwell Norton\Opcenter SC - Dev\Files\Templates\Process_Mapping.csv", strict:=True)
+        ' Process-mapping CSV paths must use the Opcenter/configured base path.
 
 
         Return routingTable

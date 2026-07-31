@@ -9,6 +9,8 @@ Imports Preactor
 
 Public Class PostFiringScheduler
     Private Const POSTFIRING_START_OP_NO As Integer = 400
+    Friend Property Metrics As SchedulerActionMetricsRow
+    Friend Property LookupCache As SchedulerRunLookupCache
 
     Public Class QueueItem
         Public Property ParentRecord As Integer
@@ -46,18 +48,27 @@ Public Class PostFiringScheduler
         RequireColumn(routingDt, "operation_effective_completed")
         RequireColumn(routingDt, "Operation Number")
 
-        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
-        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
+        Dim cache As SchedulerRunLookupCache = EnsureLookupCache()
+        Dim ordersTable As Integer =
+            cache.GetClassificationFormatNumber(preactor, "LAUNCH TIME")
+        Dim opNoField As Integer =
+            cache.GetFieldNumber(preactor, ordersTable, "Op. No.")
         Dim dueDateField As Integer = TryGetFieldNumber(preactor, ordersTable, "Due Date")
         Dim priorityField As Integer = TryGetFieldNumber(preactor, ordersTable, "Priority")
 
-        Dim queue As New List(Of QueueItem)()
         Dim rowByOpRec As Dictionary(Of Integer, DataRow) =
             SharedHelpers.BuildOperationRowIndex(routingDt)
         Dim boundaries As List(Of SharedHelpers.ReleaseBoundaryInfo) =
             SharedHelpers.BuildLatestReleaseBoundaries(routingDt)
+        Dim queue As New List(Of QueueItem)(boundaries.Count)
+        Dim debugEnabled As Boolean =
+            debug IsNot Nothing AndAlso debug.Enabled
 
-        If boundaries.Count = 0 AndAlso debug IsNot Nothing AndAlso debug.Enabled Then
+        If Metrics IsNot Nothing Then
+            Metrics.BoundaryCount = boundaries.Count
+        End If
+
+        If boundaries.Count = 0 AndAlso debugEnabled Then
             debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
                 .OptimizerName = "PostFiringScheduler",
                 .Stage = "PostFiring400Plus",
@@ -78,12 +89,15 @@ Public Class PostFiringScheduler
 
         For Each boundary As SharedHelpers.ReleaseBoundaryInfo In boundaries
 
-            TraceBoundary(debug,
-                          boundary,
-                          True,
-                          SchedulerDebugReasonCodes.OK_INCLUDED,
-                          "Latest completed/released boundary selected for 400+ postfiring.")
+            If debugEnabled Then
+                TraceBoundary(debug,
+                              boundary,
+                              True,
+                              SchedulerDebugReasonCodes.OK_INCLUDED,
+                              "Latest completed/released boundary selected for 400+ postfiring.")
+            End If
 
+            Dim nextOpNo As Integer = 0
             Dim nextOpRec As Integer =
                 FindNextPostFiringCandidate(preactor,
                                             planningboard,
@@ -91,15 +105,9 @@ Public Class PostFiringScheduler
                                             opNoField,
                                             rowByOpRec,
                                             boundary,
-                                            debug)
+                                            debug,
+                                            nextOpNo)
             If nextOpRec <= 0 Then Continue For
-
-            Dim nextOpNo As Integer
-            Try
-                nextOpNo = preactor.ReadFieldInt(ordersTable, opNoField, nextOpRec)
-            Catch
-                Continue For
-            End Try
 
             Dim nextRow As DataRow = Nothing
             If Not rowByOpRec.TryGetValue(nextOpRec, nextRow) Then Continue For
@@ -137,7 +145,11 @@ Public Class PostFiringScheduler
                 .ThenBy(Function(x) x.ParentRecord) _
                 .ThenBy(Function(x) x.NextOpNo) _
                 .ToList()
-        If debug IsNot Nothing AndAlso debug.Enabled Then
+        If Metrics IsNot Nothing Then
+            Metrics.CandidateCount = ranked.Count
+            Metrics.QueueCount = ranked.Count
+        End If
+        If debugEnabled Then
             For i As Integer = 0 To ranked.Count - 1
                 Dim item As QueueItem = ranked(i)
                 debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
@@ -160,10 +172,15 @@ Public Class PostFiringScheduler
 
         If queue Is Nothing OrElse queue.Count = 0 Then Return 0
 
-        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
-        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
+        Dim cache As SchedulerRunLookupCache = EnsureLookupCache()
+        Dim ordersTable As Integer =
+            cache.GetClassificationFormatNumber(preactor, "LAUNCH TIME")
+        Dim opNoField As Integer =
+            cache.GetFieldNumber(preactor, ordersTable, "Op. No.")
 
         Dim scheduledCount As Integer = 0
+        Dim debugEnabled As Boolean =
+            debug IsNot Nothing AndAlso debug.Enabled
 
         For Each item As QueueItem In queue
 
@@ -172,13 +189,22 @@ Public Class PostFiringScheduler
                 Dim testFrom As DateTime = item.KilnAckEndTime
 
                 While opRec > 0
-                    If planningboard.IsOperationScheduled(opRec) Then
-                        testFrom = GetScheduledEnd(planningboard, opRec, testFrom)
-                        opRec = planningboard.GetNextOperation(opRec, 1)
+                    If cache.IsOperationScheduled(planningboard, opRec) Then
+                        If Metrics IsNot Nothing Then
+                            Metrics.AlreadyScheduledSkips += 1
+                        End If
+                        testFrom = GetScheduledEnd(planningboard,
+                                                   opRec,
+                                                   testFrom,
+                                                   cache)
+                        opRec = cache.GetNextOperation(planningboard, opRec, 1)
                         Continue While
                     End If
 
                     If SharedHelpers.IsCompletedOrActualizedOp(item.OperationRows, opRec) Then
+                        If Metrics IsNot Nothing Then
+                            Metrics.CompletedSkips += 1
+                        End If
                         Dim releaseTime As DateTime =
                             SharedHelpers.GetOperationReleaseTime(item.OperationRows, opRec)
 
@@ -186,76 +212,130 @@ Public Class PostFiringScheduler
                             testFrom = releaseTime
                         End If
 
-                        opRec = planningboard.GetNextOperation(opRec, 1)
+                        opRec = cache.GetNextOperation(planningboard, opRec, 1)
                         Continue While
                     End If
 
                     Dim liveOpNo As Integer =
-                        preactor.ReadFieldInt(ordersTable, opNoField, opRec)
+                        cache.ReadOperationNumber(preactor,
+                                                  ordersTable,
+                                                  opNoField,
+                                                  opRec)
 
                     If liveOpNo < POSTFIRING_START_OP_NO Then
                         Exit While
                     End If
 
                     Dim bestResRec As Integer = 0
-                    Dim bestTimes As OperationTimes? = Nothing
+                    Dim bestChangeStart As DateTime = DateTime.MinValue
+                    Dim bestProcessEnd As DateTime = DateTime.MinValue
+                    Dim hasBestTimes As Boolean = False
+                    If Metrics IsNot Nothing Then
+                        Metrics.FindResourcesCalls += 1
+                    End If
                     Dim resources As IEnumerable(Of Integer) =
                         planningboard.FindResources(opRec)
 
                     If resources IsNot Nothing Then
                         For Each resRec As Integer In resources
+                            If Metrics IsNot Nothing Then
+                                Metrics.FeasibilityTestCalls += 1
+                            End If
                             Dim testTimes As OperationTimes? =
                                 planningboard.TestOperationOnResource(opRec,
                                                                       resRec,
                                                                       testFrom)
 
-                            If testTimes.HasValue AndAlso
-                               (Not bestTimes.HasValue OrElse
-                                testTimes.Value.ChangeStart < bestTimes.Value.ChangeStart) Then
+                            If testTimes.HasValue Then
+                                Dim changeStart As DateTime =
+                                    testTimes.Value.ChangeStart
 
-                                bestTimes = testTimes
-                                bestResRec = resRec
+                                If Not hasBestTimes OrElse
+                                   changeStart < bestChangeStart Then
+
+                                    bestChangeStart = changeStart
+                                    bestProcessEnd = testTimes.Value.ProcessEnd
+                                    bestResRec = resRec
+                                    hasBestTimes = True
+                                End If
                             End If
                         Next
                     End If
 
-                    If bestTimes.HasValue AndAlso bestResRec > 0 Then
+                    If hasBestTimes AndAlso bestResRec > 0 Then
                         ' Recheck immediately before changing the live board.
-                        If Not planningboard.IsOperationScheduled(opRec) Then
-                            Dim trace As ScheduleAttemptTraceRow = CreateAttempt(debug, item, opRec, liveOpNo, bestResRec, bestTimes.Value.ChangeStart)
+                        If Not cache.IsOperationScheduled(planningboard,
+                                                          opRec,
+                                                          forceRefresh:=True) Then
+                            Dim trace As ScheduleAttemptTraceRow = Nothing
+                            If debugEnabled Then
+                                trace = CreateAttempt(debug,
+                                                      item,
+                                                      opRec,
+                                                      liveOpNo,
+                                                      bestResRec,
+                                                      bestChangeStart)
+                            End If
                             Try
+                                If Metrics IsNot Nothing Then
+                                    Metrics.PlacementAttempts += 1
+                                End If
                                 planningboard.PutOperationOnResource(opRec,
                                                                  bestResRec,
-                                                                 bestTimes.Value.ChangeStart)
-                                CompleteAttempt(planningboard, trace, opRec, True, Nothing)
+                                                                 bestChangeStart)
+                                cache.MarkOperationPlaced(opRec)
+                                If Metrics IsNot Nothing Then
+                                    Metrics.PlacementSuccesses += 1
+                                End If
+                                If trace IsNot Nothing Then
+                                    CompleteAttempt(planningboard,
+                                                    trace,
+                                                    opRec,
+                                                    True,
+                                                    Nothing)
+                                End If
                             Catch ex As Exception
-                                CompleteAttempt(planningboard, trace, opRec, False, ex)
+                                If trace IsNot Nothing Then
+                                    CompleteAttempt(planningboard,
+                                                    trace,
+                                                    opRec,
+                                                    False,
+                                                    ex)
+                                End If
                                 Throw
                             End Try
                             scheduledCount += 1
+                        ElseIf Metrics IsNot Nothing Then
+                            Metrics.AlreadyScheduledSkips += 1
                         End If
 
                         testFrom = GetScheduledEnd(planningboard,
                                                    opRec,
-                                                   bestTimes.Value.ProcessEnd)
+                                                   bestProcessEnd,
+                                                   cache)
                     Else
                         System.Diagnostics.Debug.WriteLine("PostFiring: no feasible resource. Order=" &
                                         item.OrderNo &
                                         ", OpRec=" & opRec &
                                         ", OpNo=" & liveOpNo)
-                        TraceCandidate(debug,
-                                       item,
-                                       opRec,
-                                       liveOpNo,
-                                       False,
-                                       SchedulerDebugReasonCodes.POSTFIRING_NO_FEASIBLE_RESOURCE,
-                                       "No feasible resource was found for 400+ postfiring placement.")
+                        If debugEnabled Then
+                            TraceCandidate(debug,
+                                           item,
+                                           opRec,
+                                           liveOpNo,
+                                           False,
+                                           SchedulerDebugReasonCodes.POSTFIRING_NO_FEASIBLE_RESOURCE,
+                                           "No feasible resource was found for 400+ postfiring placement.")
+                        End If
                     End If
 
-                    opRec = planningboard.GetNextOperation(opRec, 1)
+                    opRec = cache.GetNextOperation(planningboard, opRec, 1)
                 End While
 
             Catch ex As Exception
+                If Metrics IsNot Nothing Then
+                    Metrics.HandledExceptions += 1
+                End If
                 System.Diagnostics.Debug.WriteLine("PostFiring failed. Order=" &
                                 item.OrderNo &
                                 ", OpRec=" & item.NextOpRec &
@@ -274,9 +354,13 @@ Public Class PostFiringScheduler
                                                  opNoField As Integer,
                                                  rowByOpRec As IDictionary(Of Integer, DataRow),
                                                  boundary As SharedHelpers.ReleaseBoundaryInfo,
-                                                 debug As SchedulerDebugCollector) As Integer
+                                                 debug As SchedulerDebugCollector,
+                                                 ByRef selectedOpNo As Integer) As Integer
 
-        Dim nextOpRec As Integer = planningboard.GetNextOperation(boundary.OpRec, 1)
+        Dim cache As SchedulerRunLookupCache = EnsureLookupCache()
+        selectedOpNo = 0
+        Dim nextOpRec As Integer =
+            cache.GetNextOperation(planningboard, boundary.OpRec, 1)
         If nextOpRec <= 0 Then
             TraceBoundary(debug,
                           boundary,
@@ -290,7 +374,10 @@ Public Class PostFiringScheduler
 
             Dim nextOpNo As Integer = 0
             Try
-                nextOpNo = preactor.ReadFieldInt(ordersTable, opNoField, nextOpRec)
+                nextOpNo = cache.ReadOperationNumber(preactor,
+                                                     ordersTable,
+                                                     opNoField,
+                                                     nextOpRec)
             Catch
                 TraceBoundary(debug,
                               boundary,
@@ -301,7 +388,10 @@ Public Class PostFiringScheduler
                 Return 0
             End Try
 
-            If planningboard.IsOperationScheduled(nextOpRec) Then
+            If cache.IsOperationScheduled(planningboard, nextOpRec) Then
+                If Metrics IsNot Nothing Then
+                    Metrics.AlreadyScheduledSkips += 1
+                End If
                 TraceBoundary(debug,
                               boundary,
                               False,
@@ -310,11 +400,14 @@ Public Class PostFiringScheduler
                               nextOpRec.ToString(Globalization.CultureInfo.InvariantCulture) &
                               "; NextOpNo=" &
                               nextOpNo.ToString(Globalization.CultureInfo.InvariantCulture) & ".")
-                nextOpRec = planningboard.GetNextOperation(nextOpRec, 1)
+                nextOpRec = cache.GetNextOperation(planningboard, nextOpRec, 1)
                 Continue While
             End If
 
             If SharedHelpers.IsCompletedOrActualizedOp(rowByOpRec, nextOpRec) Then
+                If Metrics IsNot Nothing Then
+                    Metrics.CompletedSkips += 1
+                End If
                 TraceBoundary(debug,
                               boundary,
                               False,
@@ -323,7 +416,7 @@ Public Class PostFiringScheduler
                               nextOpRec.ToString(Globalization.CultureInfo.InvariantCulture) &
                               "; NextOpNo=" &
                               nextOpNo.ToString(Globalization.CultureInfo.InvariantCulture) & ".")
-                nextOpRec = planningboard.GetNextOperation(nextOpRec, 1)
+                nextOpRec = cache.GetNextOperation(planningboard, nextOpRec, 1)
                 Continue While
             End If
 
@@ -347,6 +440,7 @@ Public Class PostFiringScheduler
                           nextOpRec.ToString(Globalization.CultureInfo.InvariantCulture) &
                           "; NextOpNo=" &
                           nextOpNo.ToString(Globalization.CultureInfo.InvariantCulture) & ".")
+            selectedOpNo = nextOpNo
             Return nextOpRec
 
         End While
@@ -444,12 +538,17 @@ Public Class PostFiringScheduler
             row.FailureReasonDetail = ex.Message
             Return
         End If
-        row.ScheduledAfterAttempt = planningboard.IsOperationScheduled(opRec)
+        Dim cache As SchedulerRunLookupCache = EnsureLookupCache()
+        row.ScheduledAfterAttempt =
+            cache.IsOperationScheduled(planningboard,
+                                       opRec,
+                                       forceRefresh:=True)
         row.PlanningBoardResultCode = If(row.ScheduledAfterAttempt, 0, -1)
         row.PlanningBoardResultMeaning = If(row.ScheduledAfterAttempt, "Scheduled", "Operation remained unscheduled")
         row.FailureReasonCode = If(row.ScheduledAfterAttempt, SchedulerDebugReasonCodes.OK_SCHEDULED,
                                    SchedulerDebugReasonCodes.SCHEDULE_RESULT_NOT_SCHEDULED)
-        Dim times As Nullable(Of OperationResourceTimes) = planningboard.GetOperationTimes(opRec)
+        Dim times As Nullable(Of OperationResourceTimes) =
+            cache.GetOperationTimes(planningboard, opRec)
         If times.HasValue Then
             row.ActualStartTime = times.Value.OperationTimes.ProcessStart
             row.ActualEndTime = times.Value.OperationTimes.ProcessEnd
@@ -512,7 +611,9 @@ Public Class PostFiringScheduler
                                        ordersTable As Integer,
                                        fieldName As String) As Integer
         Try
-            Return preactor.GetFieldNumber(ordersTable, fieldName)
+            Return EnsureLookupCache().GetFieldNumber(preactor,
+                                                      ordersTable,
+                                                      fieldName)
         Catch
             Return 0
         End Try
@@ -520,15 +621,24 @@ Public Class PostFiringScheduler
 
     Private Function GetScheduledEnd(planningboard As IPlanningBoard,
                                      opRec As Integer,
-                                     fallback As DateTime) As DateTime
+                                     fallback As DateTime,
+                                     cache As SchedulerRunLookupCache) As DateTime
         Dim times As Nullable(Of OperationResourceTimes) =
-            planningboard.GetOperationTimes(opRec)
+            cache.GetOperationTimes(planningboard, opRec)
 
         If times.HasValue Then
             Return times.Value.OperationTimes.ProcessEnd
         End If
 
         Return fallback
+    End Function
+
+    Private Function EnsureLookupCache() As SchedulerRunLookupCache
+        If LookupCache Is Nothing Then
+            LookupCache = New SchedulerRunLookupCache()
+        End If
+        LookupCache.Metrics = Metrics
+        Return LookupCache
     End Function
 
     Private Function FormatDateForTrace(value As DateTime) As String

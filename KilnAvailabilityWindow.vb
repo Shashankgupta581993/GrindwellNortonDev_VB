@@ -42,6 +42,7 @@ Public Class KilnAvailabilityWindow
 
     Public Sub New()
         MyBase.New()
+        InitializeComponent()
         BuildTableUi()
     End Sub
 
@@ -52,7 +53,6 @@ Public Class KilnAvailabilityWindow
         Try
             preactor = PreactorFactory.CreatePreactorObject(preactorComObject)
 
-            BuildTableUi()
             LoadKilnAvailabilityTable()
 
             Return 0

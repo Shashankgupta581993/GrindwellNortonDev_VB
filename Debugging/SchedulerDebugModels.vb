@@ -176,3 +176,44 @@ Public Class DebugConfigSnapshotRow
     Public Property Name As String
     Public Property Value As String
 End Class
+
+Public Class SchedulerActionMetricsRow
+    Public Property RunId As String
+    Public Property ActionName As String
+    Public Property StartedAt As DateTime
+    Public Property FinishedAt As DateTime
+    Public Property ElapsedMilliseconds As Long
+    Public Property DebugInitializationMilliseconds As Long
+    Public Property RoutingSnapshotMilliseconds As Long
+    Public Property QueueBuildMilliseconds As Long
+    Public Property SchedulingMilliseconds As Long
+    Public Property RecordsScanned As Integer
+    Public Property RoutingRowsCreated As Integer
+    Public Property CandidateCount As Integer
+    Public Property BoundaryCount As Integer
+    Public Property QueueCount As Integer
+    Public Property FormatLookupCalls As Long
+    Public Property FieldLookupCalls As Long
+    Public Property ResourceLookupCalls As Long
+    Public Property ReadOperationNumberCalls As Long
+    Public Property IsOperationScheduledCalls As Long
+    Public Property GetOperationTimesCalls As Long
+    Public Property GetPreviousOperationCalls As Long
+    Public Property GetNextOperationCalls As Long
+    Public Property FindResourcesCalls As Long
+    Public Property FeasibilityTestCalls As Long
+    Public Property PlacementAttempts As Long
+    Public Property PlacementSuccesses As Long
+    Public Property AlreadyScheduledSkips As Long
+    Public Property CompletedSkips As Long
+    Public Property HandledExceptions As Long
+    Public Property FormatLookupCacheHits As Long
+    Public Property FieldLookupCacheHits As Long
+    Public Property ResourceLookupCacheHits As Long
+    Public Property OperationNumberCacheHits As Long
+    Public Property ScheduledStateCacheHits As Long
+    Public Property OperationTimesCacheHits As Long
+    Public Property PreviousOperationCacheHits As Long
+    Public Property NextOperationCacheHits As Long
+    Public Property FirstResourceCacheHits As Long
+End Class

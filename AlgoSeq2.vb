@@ -27,7 +27,9 @@ Public Class AlgoSeq2
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
         Dim reader As New CsvRoutingReader()
-        Dim routingDt As DataTable = reader.ReadRoutingCsv()
+        Dim routingCsvPath As String =
+            Path.Combine(preactor.ParseShellString("{PATH}"), "Routing.csv")
+        Dim routingDt As DataTable = reader.ReadRoutingCsv(routingCsvPath)
         reader.AddExpectedFiringStartDate(routingDt)
         reader.AddFiringWeekAndBatchColumns_V2_ByExpectedDateAndCycle(routingDt, 1, 0.2)
         reader.AddPressingFields(routingDt)
@@ -213,16 +215,11 @@ Public Class AlgoSeq2
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
         Dim ordersParent As Preactor.FormatFieldPair
-        Dim dueDateField As Nullable(Of Preactor.FormatFieldPair)
-        Dim priorityField As Nullable(Of Preactor.FormatFieldPair)
         Dim parentRecord As Integer
-        Dim SequenceMode As Preactor.SequenceMode
         Dim familyFields As IEnumerable(Of Preactor.FormatFieldPair)
         Dim ordersTable As Integer
         Dim opRec As Integer
         Dim orderno As String
-        Dim ResRec As Integer
-        Dim ResRecs As IEnumerable(Of Integer)
         Dim opTimes As Double = 0
         'Nullable(Of Preactor.OperationTimes)
         Dim duedate As DateTime

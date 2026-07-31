@@ -10,6 +10,321 @@ Imports Preactor
 Public Module SharedHelpers
 
     Private ReadOnly MinimumOperationalDate As New DateTime(1900, 1, 1)
+    Private Const OperationRowIndexPropertyName As String =
+        "GN.SharedHelpers.OperationRowIndex"
+    Private Const OperationRowIndexRowCountPropertyName As String =
+        "GN.SharedHelpers.OperationRowIndex.RowCount"
+
+    ' ========================================================================
+    ' OPTIMIZER SETTINGS POINTER CATALOG
+    '
+    ' USER REPLACEMENT INSTRUCTIONS:
+    '   1. Confirm the display name, record number, field type, units,
+    '      conversion, valid range, fallback, and consumers in
+    '      GetPointerDefinitions below.
+    '   2. Change only the matching constants in OptimizerSettingsCatalog
+    '      after the authoritative GN Optimizer Settings mapping is known.
+    '   3. Record number 0 means that no authoritative dataset pointer exists
+    '      yet. Those optimizer inputs intentionally remain hardcoded.
+    '   4. Do not wire a record-0 placeholder into a live read merely because
+    '      a likely record is discovered; validate it in Opcenter first.
+    '
+    ' Compatibility notes that must remain visible:
+    '   - Batch records 3 and 4 are read today, but runFiring still passes
+    '     True and 60 explicitly to firingOptimizer_vf.
+    '   - Tunnel record 8 is read both as minimum preferred occupancy and as
+    '     drying-to-firing buffer minutes divided by 60.
+    ' ========================================================================
+    Friend NotInheritable Class OptimizerSettingPointerDefinition
+        Friend Sub New(key As String,
+                       displayName As String,
+                       recordNumber As Integer,
+                       fieldType As String,
+                       unitAndConversion As String,
+                       validRange As String,
+                       fallbackBehavior As String,
+                       consumingActions As String,
+                       currentEffectiveValue As String)
+
+            Me.Key = key
+            Me.DisplayName = displayName
+            Me.RecordNumber = recordNumber
+            Me.FieldType = fieldType
+            Me.UnitAndConversion = unitAndConversion
+            Me.ValidRange = validRange
+            Me.FallbackBehavior = fallbackBehavior
+            Me.ConsumingActions = consumingActions
+            Me.CurrentEffectiveValue = currentEffectiveValue
+        End Sub
+
+        Friend ReadOnly Property Key As String
+        Friend ReadOnly Property DisplayName As String
+        Friend ReadOnly Property RecordNumber As Integer
+        Friend ReadOnly Property FieldType As String
+        Friend ReadOnly Property UnitAndConversion As String
+        Friend ReadOnly Property ValidRange As String
+        Friend ReadOnly Property FallbackBehavior As String
+        Friend ReadOnly Property ConsumingActions As String
+        Friend ReadOnly Property CurrentEffectiveValue As String
+    End Class
+
+    Friend NotInheritable Class OptimizerSettingsCatalog
+        Private Sub New()
+        End Sub
+
+        Friend Const FormatName As String = "GN Optimizer Settings"
+        Friend Const NumericFieldName As String = "Numeric Value"
+        Friend Const ToggleFieldName As String = "Toggle Value"
+        Friend Const ParameterFieldName As String = "Parameter"
+        Friend Const DateFieldName As String = "Date Value"
+        Friend Const AvailabilityParameterRecordNumber As Integer = 0
+        Friend Const AvailabilityParameterSuffix As String = " Available From"
+
+        Friend Const BatchMinOccupancyRecordNumber As Integer = 1
+        Friend Const BatchMaxOccupancyRecordNumber As Integer = 2
+        Friend Const BatchAllowUnderfilledTailRecordNumber As Integer = 3
+        Friend Const BatchStartDelayMinutesRecordNumber As Integer = 4
+
+        Friend Const TunnelCartsPerDayRecordNumber As Integer = 5
+        Friend Const TunnelTotalCartsRecordNumber As Integer = 7
+        Friend Const TunnelMinOccupancyPreferredRecordNumber As Integer = 8
+        Friend Const TunnelDryingBufferMinutesRecordNumber As Integer = 8
+        Friend Const TunnelMaxOccupancyRecordNumber As Integer = 9
+        Friend Const MinutesPerHour As Double = 60.0
+
+        ' These effective values are deliberately separate from pointer
+        ' records. They preserve the arguments currently passed by AlgoSeq4.
+        Friend Const BatchEffectiveAllowUnderfilledTail As Boolean = True
+        Friend Const BatchEffectiveStartDelayMinutes As Integer = 60
+        Friend Const BatchEffectiveMaxBatchesPerDay As Integer = 2
+        Friend Const BatchKilnMatrixFileName As String = "kilndata.csv"
+
+        Friend Const SwkMinTonnageRecordNumber As Integer = 0
+        Friend Const SwkMaxTonnageRecordNumber As Integer = 0
+        Friend Const SwkDailyBatchLimitRecordNumber As Integer = 0
+        Friend Const SwkStartDelayMinutesRecordNumber As Integer = 0
+        Friend Const SwkAllowUnderfilledTailRecordNumber As Integer = 0
+        Friend Const SwkEffectiveMinTonnage As Double = 0.8
+        Friend Const SwkEffectiveMaxTonnage As Double = 1.0
+        Friend Const SwkEffectiveDailyBatchLimit As Integer = 2
+        Friend Const SwkEffectiveStartDelayMinutes As Integer = 60
+        Friend Const SwkEffectiveAllowUnderfilledTail As Boolean = True
+        Friend Const SwkResourceName As String = "SWBKILN"
+
+        Friend Const PressPrioritizePreviousOperationRecordNumber As Integer = 0
+        Friend Const PressEffectivePrioritizePreviousOperation As Boolean = True
+        Friend Const PressApproachingDaysRecordNumber As Integer = 0
+        Friend Const PressEffectiveApproachingDays As Integer = 2
+
+        ' This catalog is documentation and replacement guidance. It is not
+        ' instantiated by scheduler hot paths.
+        Friend Shared Function GetPointerDefinitions() _
+            As OptimizerSettingPointerDefinition()
+
+            Return New OptimizerSettingPointerDefinition() {
+                New OptimizerSettingPointerDefinition(
+                    "BatchMinOccupancy",
+                    "TODO: confirm Batch Minimum Occupancy display name",
+                    BatchMinOccupancyRecordNumber,
+                    "Numeric Value / Double",
+                    "Occupancy units; no conversion",
+                    "> 0 and <= BatchMaxOccupancy",
+                    "No fallback; the current COM read failure propagates",
+                    "AlgoSeq4.runFiring -> firingOptimizer_vf",
+                    "Live value from record 1"),
+                New OptimizerSettingPointerDefinition(
+                    "BatchMaxOccupancy",
+                    "TODO: confirm Batch Maximum Occupancy display name",
+                    BatchMaxOccupancyRecordNumber,
+                    "Numeric Value / Double",
+                    "Occupancy units; no conversion",
+                    ">= BatchMinOccupancy",
+                    "No fallback; the current COM read failure propagates",
+                    "AlgoSeq4.runFiring -> firingOptimizer_vf",
+                    "Live value from record 2"),
+                New OptimizerSettingPointerDefinition(
+                    "BatchAllowUnderfilledTailConfigured",
+                    "TODO: confirm Batch Allow Underfilled Tail display name",
+                    BatchAllowUnderfilledTailRecordNumber,
+                    "Toggle Value / Integer interpreted as Boolean",
+                    "1=True; every other value=False",
+                    "Boolean",
+                    "The read is retained, but the optimizer currently receives hardcoded True",
+                    "AlgoSeq4.runFiring",
+                    "True"),
+                New OptimizerSettingPointerDefinition(
+                    "BatchStartDelayMinutesConfigured",
+                    "TODO: confirm Batch Start Delay display name",
+                    BatchStartDelayMinutesRecordNumber,
+                    "Numeric Value / Integer",
+                    "Minutes; no conversion",
+                    "Current optimizer clamps negative values to zero",
+                    "The read is retained, but the optimizer currently receives hardcoded 60",
+                    "AlgoSeq4.runFiring",
+                    "60 minutes"),
+                New OptimizerSettingPointerDefinition(
+                    "BatchMaxBatchesPerDay",
+                    "TODO: supply Batch Maximum Batches Per Day pointer",
+                    0,
+                    "TODO: Numeric Value / Integer",
+                    "Batches per day",
+                    "> 0",
+                    "No live pointer; preserve hardcoded 2",
+                    "AlgoSeq4.runFiring -> firingOptimizer_vf",
+                    "2"),
+                New OptimizerSettingPointerDefinition(
+                    "BatchKilnMatrixFile",
+                    "TODO: confirm whether the kiln matrix filename is configurable",
+                    0,
+                    "Hardcoded String",
+                    "Filename relative to the Opcenter configuration path",
+                    "Existing readable CSV filename",
+                    "No live pointer; preserve kilndata.csv",
+                    "AlgoSeq4.runFiring -> firingOptimizer_vf",
+                    "kilndata.csv"),
+                New OptimizerSettingPointerDefinition(
+                    "ResourceAvailableFrom",
+                    "Resource name plus ' Available From'",
+                    AvailabilityParameterRecordNumber,
+                    "Parameter / String plus Date Value / DateTime",
+                    "Opcenter DateTime; no conversion",
+                    "DateTime.MinValue or a valid Opcenter date",
+                    "Lookup is by parameter name; missing/blank values fall back through current kiln availability logic",
+                    "AlgoSeq4.runFiring, runSWKFiring, and runFiring2",
+                    "Dynamic parameter-name lookup for each kiln resource"),
+                New OptimizerSettingPointerDefinition(
+                    "TunnelCartsPerDay",
+                    "TODO: confirm Tunnel Carts Per Day display name",
+                    TunnelCartsPerDayRecordNumber,
+                    "Numeric Value / Double",
+                    "Carts per day; no conversion",
+                    "> 0",
+                    "No fallback; the current COM read failure propagates",
+                    "AlgoSeq4.runFiring2 -> tunnelOptimizer_vf",
+                    "Live value from record 5"),
+                New OptimizerSettingPointerDefinition(
+                    "TunnelTotalCarts",
+                    "TODO: confirm Tunnel Total Carts display name",
+                    TunnelTotalCartsRecordNumber,
+                    "Numeric Value / Integer",
+                    "Cart count; no conversion",
+                    "> 0",
+                    "No fallback; the current COM read failure propagates",
+                    "AlgoSeq4.runFiring2 -> tunnelOptimizer_vf",
+                    "Live value from record 7"),
+                New OptimizerSettingPointerDefinition(
+                    "TunnelMinOccupancyPreferred",
+                    "TODO: confirm Tunnel Minimum Preferred Occupancy display name",
+                    TunnelMinOccupancyPreferredRecordNumber,
+                    "Numeric Value / Double",
+                    "Occupancy units; no conversion",
+                    ">= 0 and <= TunnelMaxOccupancy",
+                    "No fallback; the current COM read failure propagates",
+                    "AlgoSeq4.runFiring2 -> tunnelOptimizer_vf",
+                    "Live value from record 8"),
+                New OptimizerSettingPointerDefinition(
+                    "TunnelDryingToFiringBuffer",
+                    "TODO: supply or confirm Tunnel Drying-to-Firing Buffer display name",
+                    TunnelDryingBufferMinutesRecordNumber,
+                    "Numeric Value / Double",
+                    "Stored minutes divided by 60 to produce hours",
+                    "TODO: confirm nonnegative range",
+                    "No fallback; record 8 is intentionally shared with minimum occupancy",
+                    "AlgoSeq4.runFiring2 -> tunnelOptimizer_vf",
+                    "Record 8 divided by 60"),
+                New OptimizerSettingPointerDefinition(
+                    "TunnelMaxOccupancy",
+                    "TODO: confirm Tunnel Maximum Occupancy display name",
+                    TunnelMaxOccupancyRecordNumber,
+                    "Numeric Value / Double",
+                    "Occupancy units; no conversion",
+                    "> 0 and >= TunnelMinOccupancyPreferred",
+                    "No fallback; the current COM read failure propagates",
+                    "AlgoSeq4.runFiring2 -> tunnelOptimizer_vf",
+                    "Live value from record 9"),
+                New OptimizerSettingPointerDefinition(
+                    "SwkMinTonnage",
+                    "TODO: supply SWK Minimum Tonnage pointer",
+                    SwkMinTonnageRecordNumber,
+                    "TODO: Numeric Value / Double",
+                    "Tonnage; no conversion",
+                    "> 0 and <= SWK maximum tonnage",
+                    "No live pointer; preserve hardcoded 0.8",
+                    "AlgoSeq4.runSWKFiring -> swkOptimizer_vf",
+                    "0.8"),
+                New OptimizerSettingPointerDefinition(
+                    "SwkMaxTonnage",
+                    "TODO: supply SWK Maximum Tonnage pointer",
+                    SwkMaxTonnageRecordNumber,
+                    "TODO: Numeric Value / Double",
+                    "Tonnage; no conversion",
+                    "> 0 and >= SWK minimum tonnage",
+                    "No live pointer; preserve hardcoded 1.0",
+                    "AlgoSeq4.runSWKFiring -> swkOptimizer_vf",
+                    "1.0"),
+                New OptimizerSettingPointerDefinition(
+                    "SwkDailyBatchLimit",
+                    "TODO: supply SWK Daily Batch Limit pointer",
+                    SwkDailyBatchLimitRecordNumber,
+                    "TODO: Numeric Value / Integer",
+                    "Batches per day",
+                    "> 0",
+                    "No live pointer; preserve hardcoded 2",
+                    "AlgoSeq4.runSWKFiring -> swkOptimizer_vf",
+                    "2"),
+                New OptimizerSettingPointerDefinition(
+                    "SwkBatchStartDelayMinutes",
+                    "TODO: supply SWK Batch Start Delay pointer",
+                    SwkStartDelayMinutesRecordNumber,
+                    "TODO: Numeric Value / Integer",
+                    "Minutes; no conversion",
+                    ">= 0",
+                    "No live pointer; preserve hardcoded 60",
+                    "AlgoSeq4.runSWKFiring -> swkOptimizer_vf",
+                    "60 minutes"),
+                New OptimizerSettingPointerDefinition(
+                    "SwkAllowUnderfilledTail",
+                    "TODO: supply SWK Allow Underfilled Tail pointer",
+                    SwkAllowUnderfilledTailRecordNumber,
+                    "TODO: Toggle Value / Boolean",
+                    "Boolean",
+                    "Boolean",
+                    "No live pointer; preserve hardcoded True",
+                    "AlgoSeq4.runSWKFiring -> swkOptimizer_vf",
+                    "True"),
+                New OptimizerSettingPointerDefinition(
+                    "SwkResourceName",
+                    "TODO: confirm whether the SWK resource name is configurable",
+                    0,
+                    "Hardcoded String",
+                    "Opcenter resource name",
+                    "Existing SWK resource",
+                    "No live pointer; preserve SWBKILN",
+                    "AlgoSeq4.runSWKFiring -> swkOptimizer_vf",
+                    "SWBKILN"),
+                New OptimizerSettingPointerDefinition(
+                    "PressPrioritizePreviousOperation",
+                    "TODO: supply Press Prioritize Previous Operation pointer",
+                    PressPrioritizePreviousOperationRecordNumber,
+                    "TODO: Toggle Value / Boolean",
+                    "Boolean",
+                    "Boolean",
+                    "No live pointer; preserve hardcoded True",
+                    "AlgoSeq4.runPress -> pressingOptimizer_vf",
+                    "True"),
+                New OptimizerSettingPointerDefinition(
+                    "PressApproachingDays",
+                    "TODO: supply Press Approaching Days pointer",
+                    PressApproachingDaysRecordNumber,
+                    "TODO: Numeric Value / Integer",
+                    "Calendar days; no conversion",
+                    "TODO: confirm nonnegative range",
+                    "No live pointer; preserve effective default 2",
+                    "AlgoSeq4.untilPress and AlgoSeq4.runPress",
+                    "2 days")
+            }
+        End Function
+    End Class
 
     ' Numeric project dates are interpreted deterministically. Day-first
     ' formats intentionally precede US slash formats so ambiguous values such
@@ -219,6 +534,39 @@ Public Module SharedHelpers
 
         For Each fieldName As String In fieldNames
             Dim fieldNo As Integer = TryGetFieldNumber(preactor, formatNo, fieldName)
+            If fieldNo > 0 Then Return fieldNo
+        Next
+
+        Return 0
+    End Function
+
+    Private Function TryGetFieldNumber(preactor As IPreactor,
+                                       formatNo As Integer,
+                                       fieldName As String,
+                                       lookupCache As SchedulerRunLookupCache) As Integer
+        If preactor Is Nothing Then Return 0
+        If formatNo <= 0 Then Return 0
+        If String.IsNullOrWhiteSpace(fieldName) Then Return 0
+
+        Try
+            Return lookupCache.GetFieldNumber(preactor, formatNo, fieldName)
+        Catch
+            Return 0
+        End Try
+    End Function
+
+    Private Function ResolveFirstExistingField(preactor As IPreactor,
+                                               formatNo As Integer,
+                                               fieldNames As String(),
+                                               lookupCache As SchedulerRunLookupCache) As Integer
+        If fieldNames Is Nothing Then Return 0
+
+        For Each fieldName As String In fieldNames
+            Dim fieldNo As Integer =
+                TryGetFieldNumber(preactor,
+                                  formatNo,
+                                  fieldName,
+                                  lookupCache)
             If fieldNo > 0 Then Return fieldNo
         Next
 
@@ -444,231 +792,289 @@ Public Module SharedHelpers
     End Function
 
     Public Function readOrderTable(ByVal preactor As IPreactor) As DataTable
+        Return ReadOrderTableCore(preactor, Nothing)
+    End Function
 
+    Friend Function ReadOrderTableWithCache(preactor As IPreactor,
+                                            lookupCache As SchedulerRunLookupCache) As DataTable
+        Return ReadOrderTableCore(preactor, lookupCache)
+    End Function
+
+    Private Function ReadOrderTableCore(preactor As IPreactor,
+                                        lookupCache As SchedulerRunLookupCache) As DataTable
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
         Dim dt As DataTable = BuildRoutingSchema()
+        Dim cache As SchedulerRunLookupCache = lookupCache
+        If cache Is Nothing Then cache = New SchedulerRunLookupCache()
 
-        ' 1. Suspend indexing, events, and constraints for bulk insert performance
-        dt.BeginLoadData()
+        ' Snapshot COM calls are represented by RoutingSnapshotMilliseconds.
+        ' Temporarily suppress action-traversal counters while retaining values
+        ' in the same invocation-local cache for later scheduler reuse.
+        Dim actionMetrics As SchedulerActionMetricsRow = cache.Metrics
+        cache.Metrics = Nothing
 
-        Dim ordersTable = preactor.GetFormatNumber("Orders")
-        Dim orderNo = preactor.GetFieldNumber(ordersTable, "Order No.")
-        Dim partNo = preactor.GetFieldNumber(ordersTable, "Part No.")
-        Dim product = preactor.GetFieldNumber(ordersTable, "Product")
-        Dim opNo = preactor.GetFieldNumber(ordersTable, "Op. No.")
-        Dim opName = preactor.GetFieldNumber(ordersTable, "Operation Name")
-        Dim resGroup = preactor.GetFieldNumber(ordersTable, "Resource Group")
-        Dim res = preactor.GetFieldNumber(ordersTable, "Required Resource")
-        Dim stpTime = preactor.GetFieldNumber(ordersTable, "Setup Time")
-        Dim timePerItem = preactor.GetFieldNumber(ordersTable, "Op. Time per Item")
-        Dim salesOrder = preactor.GetFieldNumber(ordersTable, "Operation Name")
-        Dim Qty = preactor.GetFieldNumber(ordersTable, "Quantity")
-        Dim dueDate = preactor.GetFieldNumber(ordersTable, "Due Date")
-        Dim batchTime = preactor.GetFieldNumber(ordersTable, "Batch Time")
-        Dim prsTimeType = preactor.GetFieldNumber(ordersTable, "Process Time Type")
-        Dim tonnage = preactor.GetFieldNumber(ordersTable, "Numerical Attribute 4")
-        Dim cycleType = preactor.GetFieldNumber(ordersTable, "Table Attribute 2")
-        Dim klnType = preactor.GetFieldNumber(ordersTable, "Table Attribute 3")
-        Dim volumeOcc = preactor.GetFieldNumber(ordersTable, "Numerical Attribute 5")
-        Dim presEarlyStart = preactor.GetFieldNumber(ordersTable, "Date Attribute 1")
-        Dim presDue = preactor.GetFieldNumber(ordersTable, "Date Attribute 2")
-        Dim firingDue = preactor.GetFieldNumber(ordersTable, "Date Attribute 3")
-        Dim mts = preactor.GetFieldNumber(ordersTable, "Table Attribute 1")
-        Dim wheelDia = preactor.GetFieldNumber(ordersTable, "String Attribute 5")
-        Dim wheelThck = preactor.GetFieldNumber(ordersTable, "String Attribute 4")
-        Dim wheelPin = preactor.GetFieldNumber(ordersTable, "String Attribute 3")
-        Dim schStart = preactor.GetFieldNumber(ordersTable, "Start Time")
-        Dim schEnd = preactor.GetFieldNumber(ordersTable, "End Time")
-        ' Source completion flag imported into Opcenter.
-        ' Per current design: Toggle Attribute 1 = is_completed.
-        Dim sourceCompletedField As Integer =
-    TryGetFieldNumber(preactor, ordersTable, "Toggle Attribute 1")
-
-        ' Opcenter actualization flag.
-        Dim useActualField As Integer =
-    ResolveFirstExistingField(preactor,
-                              ordersTable,
-                              New String() {
-                                  "Use Actual",
-                                  "Use Actual Times",
-                                  "USE ACTUAL TIMES",
-                                  "Use actual"
-                              })
-
-        ' Actual time fields. If your actual end has a different name,
-        ' add it to this list before "End Time".
-        Dim actualStartField As Integer =
-    ResolveFirstExistingField(preactor,
-                              ordersTable,
-                              New String() {
-                                  "Actual Start Time",
-                                  "Actual Start",
-                                  "Actual Start Date",
-                                  "Start Time Actual"
-                              })
-
-        Dim actualEndField As Integer =
-    ResolveFirstExistingField(preactor,
-                              ordersTable,
-                              New String() {
-                                  "Actual End Time",
-                                  "Actual End",
-                                  "Actual Finish Time",
-                                  "Actual End Date",
-                                  "End Time Actual"
-                              })
-        'Dim parentRecord = preactor.GetFieldNumber(ordersTable, "Belongs to Order No.")
-        Dim rowCount = preactor.RecordCount(ordersTable)
-        Dim scheduledByRecord(rowCount) As Boolean
-
-        ' Snapshot the board status once per operation. The previous-operation
-        ' flags below can then reuse the same snapshot instead of making a
-        ' second COM call for nearly every row.
-        For rec As Integer = 1 To rowCount
-            scheduledByRecord(rec) = planningboard.IsOperationScheduled(rec)
-        Next
-
-        Dim parentRecordByOrderNo As New Dictionary(Of String, Integer)(
-            StringComparer.OrdinalIgnoreCase)
-
-        For rec As Integer = 1 To rowCount
-            Dim r As DataRow = dt.NewRow()
-
-            ' 2. Cache values used multiple times to avoid redundant API reads
-            Dim currentOpNo As Integer = preactor.ReadFieldInt(ordersTable, opNo, rec)
-            Dim isScheduled As Boolean = scheduledByRecord(rec)
-            Dim currentOrderNo As String =
-                preactor.ReadFieldString(ordersTable, orderNo, rec).Trim()
-
-            r("OrdersID") = rec
-            r("Order No") = currentOrderNo
-            'r("Part Number") = preactor.ReadFieldString(ordersTable, partNo, rec)
-            'r("Part Name") = preactor.ReadFieldString(ordersTable, product, rec)
-            r("Operation Number") = currentOpNo
-            r("Operation Name") = preactor.ReadFieldString(ordersTable, opName, rec)
-            r("Resource Group") = preactor.ReadFieldString(ordersTable, resGroup, rec)
-            r("Required Resource") = preactor.ReadFieldString(ordersTable, res, rec)
-            'r("Setup Time") = preactor.ReadFieldDouble(ordersTable, stpTime, rec) * 1440
-            'r("Time Per Item")
-            'r("Sales Order")
-            r("Quantity") = preactor.ReadFieldInt(ordersTable, Qty, rec)
-            r("Due Date") = preactor.ReadFieldDateTime(ordersTable, dueDate, rec)
-            r("Batch Time") = preactor.ReadFieldDouble(ordersTable, batchTime, rec) * 1440
-            'r("Process Time Type") = preactor.ReadFieldString(ordersTable, prsTimeType, rec)
-            r("Tonnage") = preactor.ReadFieldDouble(ordersTable, tonnage, rec)
-            r("Cycle Type") = preactor.ReadFieldString(ordersTable, cycleType, rec)
-            r("Volume Occupancy") = preactor.ReadFieldDouble(ordersTable, volumeOcc, rec)
-            r("Kiln Type") = preactor.ReadFieldInt(ordersTable, klnType, rec)
-            'r("Firing buffer") = preactor.ReadFieldInt(ordersTable, , rec)
-            r("MTS/MTO") = preactor.ReadFieldInt(ordersTable, mts, rec)
-            'r("MTS/MTO priority") = preactor.ReadFieldInt(ordersTable, Qty, rec)
-            'r("Que Time") = preactor.ReadFieldInt(ordersTable, Qty, rec)
-            'r("Pressing buffer") = preactor.ReadFieldInt(ordersTable, Qty, rec)
-            r("Wheel Dia") = preactor.ReadFieldString(ordersTable, wheelDia, rec)
-            r("Wheel thickness") = preactor.ReadFieldString(ordersTable, wheelThck, rec)
-            'r("Week start") = preactor.ReadFieldString(ordersTable, wheelPin, rec)
-            r("Pressing earliest start") = preactor.ReadFieldDateTime(ordersTable, presEarlyStart, rec)
-            r("Pressing Due date") = preactor.ReadFieldDateTime(ordersTable, presDue, rec)
-            'r("Constaint Usage") = preactor.ReadFieldInt(ordersTable, Qty, rec)
-            'r("Constraint Qty") = preactor.ReadFieldInt(ordersTable, Qty, rec)
-            'r("firing earliest start date") = preactor.ReadFieldInt(ordersTable, Qty, rec)
-            r("firing due date") = preactor.ReadFieldDateTime(ordersTable, firingDue, rec)
-
-            ' 3. Streamlined scheduling assignment
-            'r("is_scheduled") = isScheduled
-            'If isScheduled Then
-            '    r("scheduled_start_time") = preactor.ReadFieldDateTime(ordersTable, schStart, rec)
-            '    r("scheduled_end_time") = preactor.ReadFieldDateTime(ordersTable, schEnd, rec)
-            'End If
-            r("is_scheduled") = isScheduled
-
-            If isScheduled Then
-                Dim liveTimes As Nullable(Of Preactor.OperationResourceTimes) = Nothing
-
-                Try
-                    liveTimes = planningboard.GetOperationTimes(rec)
-                Catch
-                    liveTimes = Nothing
-                End Try
-
-                If liveTimes.HasValue Then
-                    r("scheduled_start_time") = liveTimes.Value.OperationTimes.ProcessStart
-                    r("scheduled_end_time") = liveTimes.Value.OperationTimes.ProcessEnd
-                Else
-                    r("scheduled_start_time") = preactor.ReadFieldDateTime(ordersTable, schStart, rec)
-                    r("scheduled_end_time") = preactor.ReadFieldDateTime(ordersTable, schEnd, rec)
-                End If
-            End If
-            Dim sourceCompleted As Boolean =
-            ReadBoolField(preactor, ordersTable, sourceCompletedField, rec)
-
-            Dim useActual As Boolean =
-            ReadBoolField(preactor, ordersTable, useActualField, rec)
-
-            Dim actualStartValue As DateTime =
-            ReadDateField(preactor, ordersTable, actualStartField, rec)
-
-            Dim actualEndValue As DateTime =
-            ReadDateField(preactor, ordersTable, actualEndField, rec)
-
-            ' Fallback:
-            ' If Opcenter uses Start Time / End Time as actual time when Use Actual is checked,
-            ' read End Time as actual end only when Use Actual is true.
-            If actualEndValue = DateTime.MinValue AndAlso useActual AndAlso schEnd > 0 Then
-                actualEndValue = ReadDateField(preactor, ordersTable, schEnd, rec)
-            End If
-
-            If actualStartValue = DateTime.MinValue AndAlso useActual AndAlso schStart > 0 Then
-                actualStartValue = ReadDateField(preactor, ordersTable, schStart, rec)
-            End If
-
-            r("source_is_completed") = sourceCompleted
-            r("opcenter_use_actual") = useActual
-
-            If actualStartValue <> DateTime.MinValue Then
-                r("actual_start_time") = actualStartValue
-            End If
-
-            If actualEndValue <> DateTime.MinValue Then
-                r("actual_end_time") = actualEndValue
-            End If
-            ' 4. Cache the first operation record for each order. This replaces
-            ' one FindMatchingRecord COM call per operation.
-            Dim parentRecord As Integer
-
-            If currentOrderNo.Length = 0 Then
-                parentRecord = rec
-            ElseIf Not parentRecordByOrderNo.TryGetValue(currentOrderNo, parentRecord) Then
-                parentRecord = rec
-                parentRecordByOrderNo.Add(currentOrderNo, parentRecord)
-            End If
-
-            r("parent_record") = parentRecord
-
-            Dim prevOpRec As Integer = 0
-
+        Try
+            ' Suspend indexing, events, and constraints for bulk insert performance.
+            dt.BeginLoadData()
             Try
-                prevOpRec = planningboard.GetPreviousOperation(rec, 1)
+                Dim ordersTable As Integer =
+                    cache.GetFormatNumber(preactor, "Orders")
+                Dim orderNo As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Order No.")
+                Dim partNo As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Part No.")
+                Dim product As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Product")
+                Dim opNo As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Op. No.")
+                Dim opName As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Operation Name")
+                Dim resGroup As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Resource Group")
+                Dim res As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Required Resource")
+                Dim stpTime As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Setup Time")
+                Dim timePerItem As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Op. Time per Item")
+                Dim salesOrder As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Operation Name")
+                Dim qty As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Quantity")
+                Dim dueDate As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Due Date")
+                Dim batchTime As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Batch Time")
+                Dim prsTimeType As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Process Time Type")
+                Dim tonnage As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Numerical Attribute 4")
+                Dim cycleType As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Table Attribute 2")
+                Dim klnType As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Table Attribute 3")
+                Dim volumeOcc As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Numerical Attribute 5")
+                Dim presEarlyStart As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Date Attribute 1")
+                Dim presDue As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Date Attribute 2")
+                Dim firingDue As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Date Attribute 3")
+                Dim mts As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Table Attribute 1")
+                Dim wheelDia As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "String Attribute 5")
+                Dim wheelThck As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "String Attribute 4")
+                Dim wheelPin As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "String Attribute 3")
+                Dim schStart As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "Start Time")
+                Dim schEnd As Integer =
+                    cache.GetFieldNumber(preactor, ordersTable, "End Time")
 
-                If prevOpRec > 0 Then
-                    If prevOpRec <= rowCount Then
-                        r("prev_op_is_scheduled") = scheduledByRecord(prevOpRec)
-                    Else
-                        r("prev_op_is_scheduled") = planningboard.IsOperationScheduled(prevOpRec)
+                ' Toggle Attribute 1 remains the source is_completed flag.
+                Dim sourceCompletedField As Integer =
+                    TryGetFieldNumber(preactor,
+                                      ordersTable,
+                                      "Toggle Attribute 1",
+                                      cache)
+
+                Dim useActualField As Integer =
+                    ResolveFirstExistingField(preactor,
+                                              ordersTable,
+                                              New String() {
+                                                  "Use Actual",
+                                                  "Use Actual Times",
+                                                  "USE ACTUAL TIMES",
+                                                  "Use actual"
+                                              },
+                                              cache)
+
+                Dim actualStartField As Integer =
+                    ResolveFirstExistingField(preactor,
+                                              ordersTable,
+                                              New String() {
+                                                  "Actual Start Time",
+                                                  "Actual Start",
+                                                  "Actual Start Date",
+                                                  "Start Time Actual"
+                                              },
+                                              cache)
+
+                Dim actualEndField As Integer =
+                    ResolveFirstExistingField(preactor,
+                                              ordersTable,
+                                              New String() {
+                                                  "Actual End Time",
+                                                  "Actual End",
+                                                  "Actual Finish Time",
+                                                  "Actual End Date",
+                                                  "End Time Actual"
+                                              },
+                                              cache)
+
+                Dim rowCount As Integer = preactor.RecordCount(ordersTable)
+                Dim scheduledByRecord(rowCount) As Boolean
+
+                ' Capture scheduled state exactly once per normal Orders record.
+                For rec As Integer = 1 To rowCount
+                    scheduledByRecord(rec) =
+                        cache.IsOperationScheduled(planningboard, rec)
+                Next
+
+                Dim parentRecordByOrderNo As New Dictionary(Of String, Integer)(
+                    StringComparer.OrdinalIgnoreCase)
+                Dim operationRows As New Dictionary(Of Integer, DataRow)(rowCount)
+
+                For rec As Integer = 1 To rowCount
+                    Dim r As DataRow = dt.NewRow()
+                    Dim currentOpNo As Integer =
+                        cache.ReadOperationNumber(preactor,
+                                                  ordersTable,
+                                                  opNo,
+                                                  rec)
+                    Dim isScheduled As Boolean = scheduledByRecord(rec)
+                    Dim currentOrderNo As String =
+                        preactor.ReadFieldString(ordersTable, orderNo, rec).Trim()
+
+                    r("OrdersID") = rec
+                    r("Order No") = currentOrderNo
+                    r("Operation Number") = currentOpNo
+                    r("Operation Name") = preactor.ReadFieldString(ordersTable, opName, rec)
+                    r("Resource Group") = preactor.ReadFieldString(ordersTable, resGroup, rec)
+                    r("Required Resource") = preactor.ReadFieldString(ordersTable, res, rec)
+                    r("Quantity") = preactor.ReadFieldInt(ordersTable, qty, rec)
+                    r("Due Date") = preactor.ReadFieldDateTime(ordersTable, dueDate, rec)
+                    r("Batch Time") = preactor.ReadFieldDouble(ordersTable, batchTime, rec) * 1440
+                    r("Tonnage") = preactor.ReadFieldDouble(ordersTable, tonnage, rec)
+                    r("Cycle Type") = preactor.ReadFieldString(ordersTable, cycleType, rec)
+                    r("Volume Occupancy") = preactor.ReadFieldDouble(ordersTable, volumeOcc, rec)
+                    r("Kiln Type") = preactor.ReadFieldInt(ordersTable, klnType, rec)
+                    r("MTS/MTO") = preactor.ReadFieldInt(ordersTable, mts, rec)
+                    r("Wheel Dia") = preactor.ReadFieldString(ordersTable, wheelDia, rec)
+                    r("Wheel thickness") = preactor.ReadFieldString(ordersTable, wheelThck, rec)
+                    r("Pressing earliest start") =
+                        preactor.ReadFieldDateTime(ordersTable, presEarlyStart, rec)
+                    r("Pressing Due date") =
+                        preactor.ReadFieldDateTime(ordersTable, presDue, rec)
+                    r("firing due date") =
+                        preactor.ReadFieldDateTime(ordersTable, firingDue, rec)
+                    r("is_scheduled") = isScheduled
+
+                    If isScheduled Then
+                        Dim liveTimes As Nullable(Of Preactor.OperationResourceTimes) = Nothing
+                        Try
+                            liveTimes = cache.GetOperationTimes(planningboard, rec)
+                        Catch
+                            liveTimes = Nothing
+                        End Try
+
+                        If liveTimes.HasValue Then
+                            r("scheduled_start_time") =
+                                liveTimes.Value.OperationTimes.ProcessStart
+                            r("scheduled_end_time") =
+                                liveTimes.Value.OperationTimes.ProcessEnd
+                        Else
+                            r("scheduled_start_time") =
+                                preactor.ReadFieldDateTime(ordersTable, schStart, rec)
+                            r("scheduled_end_time") =
+                                preactor.ReadFieldDateTime(ordersTable, schEnd, rec)
+                        End If
                     End If
-                End If
 
-            Catch ex As Exception
-                ' Keep default False if previous-operation lookup fails.
-                ' Optional: add logging later.
-                r("prev_op_is_scheduled") = False
+                    Dim sourceCompleted As Boolean =
+                        ReadBoolField(preactor,
+                                      ordersTable,
+                                      sourceCompletedField,
+                                      rec)
+                    Dim useActual As Boolean =
+                        ReadBoolField(preactor,
+                                      ordersTable,
+                                      useActualField,
+                                      rec)
+                    Dim actualStartValue As DateTime =
+                        ReadDateField(preactor,
+                                      ordersTable,
+                                      actualStartField,
+                                      rec)
+                    Dim actualEndValue As DateTime =
+                        ReadDateField(preactor,
+                                      ordersTable,
+                                      actualEndField,
+                                      rec)
+
+                    If actualEndValue = DateTime.MinValue AndAlso
+                       useActual AndAlso
+                       schEnd > 0 Then
+
+                        actualEndValue =
+                            ReadDateField(preactor, ordersTable, schEnd, rec)
+                    End If
+
+                    If actualStartValue = DateTime.MinValue AndAlso
+                       useActual AndAlso
+                       schStart > 0 Then
+
+                        actualStartValue =
+                            ReadDateField(preactor, ordersTable, schStart, rec)
+                    End If
+
+                    r("source_is_completed") = sourceCompleted
+                    r("opcenter_use_actual") = useActual
+                    If actualStartValue <> DateTime.MinValue Then
+                        r("actual_start_time") = actualStartValue
+                    End If
+                    If actualEndValue <> DateTime.MinValue Then
+                        r("actual_end_time") = actualEndValue
+                    End If
+
+                    Dim parentRecord As Integer
+                    If currentOrderNo.Length = 0 Then
+                        parentRecord = rec
+                    ElseIf Not parentRecordByOrderNo.TryGetValue(currentOrderNo,
+                                                                  parentRecord) Then
+                        parentRecord = rec
+                        parentRecordByOrderNo.Add(currentOrderNo, parentRecord)
+                    End If
+                    r("parent_record") = parentRecord
+
+                    Try
+                        Dim prevOpRec As Integer =
+                            cache.GetPreviousOperation(planningboard, rec, 1)
+
+                        If prevOpRec > 0 Then
+                            If prevOpRec <= rowCount Then
+                                r("prev_op_is_scheduled") =
+                                    scheduledByRecord(prevOpRec)
+                            Else
+                                r("prev_op_is_scheduled") =
+                                    cache.IsOperationScheduled(planningboard,
+                                                               prevOpRec)
+                            End If
+                        End If
+                    Catch
+                        r("prev_op_is_scheduled") = False
+                    End Try
+
+                    dt.Rows.Add(r)
+                    If Not operationRows.ContainsKey(rec) Then
+                        operationRows.Add(rec, r)
+                    End If
+                Next
+
+                SetOperationRowIndex(dt, operationRows)
+            Finally
+                dt.EndLoadData()
             End Try
 
-            dt.Rows.Add(r)
-        Next
-        dt.EndLoadData()
-        PopulateWipColumns(dt, planningboard, planningboard.TerminatorTime)
-        Return dt
+            Dim terminatorTime As DateTime = planningboard.TerminatorTime
+            PopulateWipColumns(dt, planningboard, terminatorTime)
+            Return dt
+        Finally
+            cache.Metrics = actionMetrics
+        End Try
     End Function
     Public Function GetWipInfo(dt As DataTable,
                            planningboard As IPlanningBoard,
@@ -1374,6 +1780,34 @@ Public Module SharedHelpers
         Dim result As New Dictionary(Of Integer, DataRow)()
         If routingDt Is Nothing Then Return result
 
+        Dim cached As Dictionary(Of Integer, DataRow) =
+            TryCast(routingDt.ExtendedProperties(OperationRowIndexPropertyName),
+                    Dictionary(Of Integer, DataRow))
+        Dim cachedRowCount As Integer = -1
+        Dim cachedCountValue As Object =
+            routingDt.ExtendedProperties(OperationRowIndexRowCountPropertyName)
+
+        If cachedCountValue IsNot Nothing Then
+            Integer.TryParse(cachedCountValue.ToString(), cachedRowCount)
+        End If
+
+        Dim cacheBelongsToTable As Boolean =
+            cached IsNot Nothing AndAlso cached.Count = 0
+        If cached IsNot Nothing AndAlso cached.Count > 0 Then
+            For Each cachedRow As DataRow In cached.Values
+                cacheBelongsToTable =
+                    Object.ReferenceEquals(cachedRow.Table, routingDt)
+                Exit For
+            Next
+        End If
+
+        If cached IsNot Nothing AndAlso
+           cacheBelongsToTable AndAlso
+           cachedRowCount = routingDt.Rows.Count Then
+
+            Return cached
+        End If
+
         For Each row As DataRow In routingDt.Rows
             Dim opRec As Integer = SafeInt(row("OrdersID"))
             If opRec > 0 AndAlso Not result.ContainsKey(opRec) Then
@@ -1381,8 +1815,19 @@ Public Module SharedHelpers
             End If
         Next
 
+        SetOperationRowIndex(routingDt, result)
         Return result
     End Function
+
+    Private Sub SetOperationRowIndex(routingDt As DataTable,
+                                     operationRows As Dictionary(Of Integer, DataRow))
+        If routingDt Is Nothing OrElse operationRows Is Nothing Then Return
+
+        routingDt.ExtendedProperties(OperationRowIndexPropertyName) =
+            operationRows
+        routingDt.ExtendedProperties(OperationRowIndexRowCountPropertyName) =
+            routingDt.Rows.Count
+    End Sub
 
     Public Function IsCompletedOrActualizedOp(operationRows As IDictionary(Of Integer, DataRow),
                                                opRec As Integer) As Boolean
@@ -1898,11 +2343,18 @@ Public Module SharedHelpers
         If preactor Is Nothing Then Throw New ArgumentNullException(NameOf(preactor))
         If String.IsNullOrWhiteSpace(parameterName) Then Return defaultValue
 
-        Dim settingsFmt As Integer = preactor.GetFormatNumber("GN Optimizer Settings")
+        Dim settingsFmt As Integer =
+            preactor.GetFormatNumber(OptimizerSettingsCatalog.FormatName)
         If settingsFmt <= 0 Then Return defaultValue
 
-        Dim parameterField As Integer = preactor.GetFieldNumber(settingsFmt, "Parameter")
-        Dim dateField As Integer = preactor.GetFieldNumber(settingsFmt, "Date Value")
+        Dim parameterField As Integer =
+            preactor.GetFieldNumber(
+                settingsFmt,
+                OptimizerSettingsCatalog.ParameterFieldName)
+        Dim dateField As Integer =
+            preactor.GetFieldNumber(
+                settingsFmt,
+                OptimizerSettingsCatalog.DateFieldName)
 
         If parameterField <= 0 OrElse dateField <= 0 Then Return defaultValue
 
@@ -2084,7 +2536,8 @@ Public Module SharedHelpers
 
             Dim d As DateTime =
             ReadOptimizerSettingDate(preactor,
-                                     resourceName & " Available From",
+                                     resourceName &
+                                         OptimizerSettingsCatalog.AvailabilityParameterSuffix,
                                      DateTime.MinValue)
 
             If d <> DateTime.MinValue Then

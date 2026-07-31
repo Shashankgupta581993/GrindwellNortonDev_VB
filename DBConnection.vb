@@ -1,4 +1,7 @@
-﻿Imports System.Data.SqlClient
+﻿Option Strict On
+Option Explicit On
+
+Imports System.Data.SqlClient
 Imports System.Text
 Imports System.Windows.Forms
 Imports System
@@ -32,48 +35,36 @@ Public Class DBConnection
         ' Get the connection string
         Dim connectionString = preactor.ParseShellString("{DB CONNECT STRING}")
 
-        ' Create a connection to the database
-        Dim connection = New SqlConnection(connectionString)
+        Dim result As New StringBuilder()
 
-        ' Open the connection
-        connection.Open()
+        Using connection As New SqlConnection(connectionString)
+            connection.Open()
 
-        ' Define the sql to select the calendar states
-        Dim sql = "SELECT " +
-        "[Id], [Name], [Color], [Pattern], [Efficiency], [CostFactor], [IsSetupAllowed] " +
-        "FROM " +
-        "[Calendar].[CalendarStates]"
+            Dim sql As String =
+                "SELECT [Id], [Name], [Color], [Pattern], [Efficiency], " &
+                "[CostFactor], [IsSetupAllowed] " &
+                "FROM [Calendar].[CalendarStates]"
 
-        ' Create a new command
-        Dim command = New SqlCommand(sql, connection)
+            Using command As New SqlCommand(sql, connection)
+                Using reader As SqlDataReader = command.ExecuteReader()
+                    Dim efficiencyOrdinal As Integer =
+                        reader.GetOrdinal("Efficiency")
+                    Dim nameOrdinal As Integer = reader.GetOrdinal("Name")
 
-        ' Execute the command and get a reader
-        Dim reader = command.ExecuteReader()
-
-        ' Get the ordinals for the fields we are interested in
-        Dim efficiencyOrdinal = reader.GetOrdinal("Efficiency")
-        Dim nameOrdinal = reader.GetOrdinal("Name")
-
-        ' Create a new string builder
-        Dim result = New StringBuilder()
-
-        ' Loop through all of the rows
-        While (reader.Read())
-
-            ' Get the state name and efficiency
-            Dim stateName = reader.GetString(nameOrdinal)
-            Dim efficiency = reader.GetDouble(efficiencyOrdinal) * 100
-
-            ' Create a string like: StateName (100%)
-            Dim format = String.Format("{0}/({1}%)", stateName, efficiency)
-
-            ' Add it to the result
-            result.AppendLine(format)
-
-        End While
-
-        ' Close the connection
-        connection.Close()
+                    While reader.Read()
+                        Dim stateName As String = reader.GetString(nameOrdinal)
+                        Dim efficiency As Double =
+                            reader.GetDouble(efficiencyOrdinal) * 100
+                        Dim formatted As String =
+                            String.Format(CultureInfo.InvariantCulture,
+                                          "{0}/({1}%)",
+                                          stateName,
+                                          efficiency)
+                        result.AppendLine(formatted)
+                    End While
+                End Using
+            End Using
+        End Using
 
         ' Display in a message box all of the states and their efficiencies
         MessageBox.Show(result.ToString())

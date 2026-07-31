@@ -1,4 +1,7 @@
-﻿Public Class LoginForm
+﻿Option Strict On
+Option Explicit On
+
+Public Class LoginForm
     Public ReadOnly Property PasswordValue As String
         Get
             Return txtPassword.Text
@@ -6,7 +9,7 @@
     End Property
 
     Private Sub btnOk_Click(sender As Object, e As EventArgs) Handles btnOk.Click
-        Me.DialogResult = DialogResult.OK
+        Me.DialogResult = System.Windows.Forms.DialogResult.OK
         Me.Close()
     End Sub
 

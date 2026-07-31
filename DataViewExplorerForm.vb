@@ -1,4 +1,9 @@
-﻿Imports System.Data
+﻿Option Strict On
+Option Explicit On
+
+Imports System
+Imports System.Collections.Generic
+Imports System.Data
 Imports System.Data.SqlClient
 Imports System.Windows.Forms
 
@@ -7,7 +12,10 @@ Public Class DataViewExplorerForm
     Private _session As DbSession
     Private _repo As MetadataExplorerRepository
 
-    Private _currentSchema As String = "UserData"
+    Private ReadOnly _allowedTables As New HashSet(Of String)(
+        StringComparer.OrdinalIgnoreCase)
+
+    Private _currentSchema As String = "metadata"
     Private _currentTable As String
     Private _currentData As DataTable
     Private _currentAdapter As SqlDataAdapter
@@ -31,6 +39,7 @@ Public Class DataViewExplorerForm
 
         ' Example for TreeView:
         tvTables.Nodes.Clear()
+        _allowedTables.Clear()
         Dim root = tvTables.Nodes.Add("Tables")
 
         For Each r As DataRow In dt.Rows
@@ -39,6 +48,7 @@ Public Class DataViewExplorerForm
 
             Dim n = root.Nodes.Add($"{schema}.{tableName}")
             n.Tag = schema & "|" & tableName
+            _allowedTables.Add(GetTableKey(schema, tableName))
         Next
         root.Expand()
     End Sub
@@ -47,6 +57,13 @@ Public Class DataViewExplorerForm
         If e.Node Is Nothing OrElse e.Node.Tag Is Nothing Then Return
 
         Dim parts = e.Node.Tag.ToString().Split("|"c)
+        If parts.Length <> 2 OrElse
+           Not _allowedTables.Contains(GetTableKey(parts(0), parts(1))) Then
+
+            MessageBox.Show("The selected table is not in the loaded metadata list.")
+            Return
+        End If
+
         _currentSchema = parts(0)
         _currentTable = parts(1)
 
@@ -54,6 +71,12 @@ Public Class DataViewExplorerForm
     End Sub
 
     Private Sub ReloadCurrent()
+        If Not _allowedTables.Contains(
+            GetTableKey(_currentSchema, _currentTable)) Then
+            Throw New InvalidOperationException(
+                "The selected table is not in the loaded metadata list.")
+        End If
+
         CleanupConnection()
 
         Dim result = _repo.LoadTable(_currentSchema, _currentTable)
@@ -66,13 +89,39 @@ Public Class DataViewExplorerForm
 
     Private Sub CleanupConnection()
         Try
+            If _currentAdapter IsNot Nothing Then
+                DisposeCommand(_currentAdapter.InsertCommand)
+                DisposeCommand(_currentAdapter.UpdateCommand)
+                DisposeCommand(_currentAdapter.DeleteCommand)
+                DisposeCommand(_currentAdapter.SelectCommand)
+                _currentAdapter.Dispose()
+            End If
+
             If _currentConnection IsNot Nothing Then
                 _currentConnection.Close()
                 _currentConnection.Dispose()
             End If
         Catch
         End Try
+        _currentAdapter = Nothing
         _currentConnection = Nothing
+    End Sub
+
+    Private Shared Sub DisposeCommand(command As SqlCommand)
+        If command IsNot Nothing Then command.Dispose()
+    End Sub
+
+    Private Shared Function GetTableKey(schemaName As String,
+                                        tableName As String) As String
+        Return If(schemaName, String.Empty) & "|" &
+            If(tableName, String.Empty)
+    End Function
+
+    Private Sub DataViewExplorerForm_FormClosed(
+        sender As Object,
+        e As FormClosedEventArgs) Handles MyBase.FormClosed
+
+        CleanupConnection()
     End Sub
 
     Private Sub btnSave_Click(sender As Object, e As EventArgs) Handles btnSave.Click
