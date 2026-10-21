@@ -864,7 +864,7 @@ Public Module SharedHelpers
                 Dim mts As Integer =
                     cache.GetFieldNumber(preactor, ordersTable, "Table Attribute 1")
                 Dim wheelDia As Integer =
-                    cache.GetFieldNumber(preactor, ordersTable, "String Attribute 5")
+                    cache.GetFieldNumber(preactor, ordersTable, "String Attribut  e 5")
                 Dim wheelThck As Integer =
                     cache.GetFieldNumber(preactor, ordersTable, "String Attribute 4")
                 Dim wheelPin As Integer =
