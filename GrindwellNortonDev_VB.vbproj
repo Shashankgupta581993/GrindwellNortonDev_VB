@@ -147,6 +147,7 @@
     <Compile Include="PostFiringScheduler.vb" />
     <Compile Include="Preactor Extensions.vb" />
     <Compile Include="pressingOptimizer_vf.vb" />
+    <Compile Include="PressCampaignScheduler.vb" />
     <Compile Include="SharedHelpers.vb" />
     <Compile Include="swkOptimizer_vf.vb" />
     <Compile Include="tunnelOptimizer.vb" />

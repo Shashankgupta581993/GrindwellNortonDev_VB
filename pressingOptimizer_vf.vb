@@ -1,20 +1,12 @@
 ﻿Public Class pressingOptimizer_vf
-    ' ----------------------
-    ' New pressing optimizer (resource-group aware, WIP-aware)
-    ' ----------------------
-    ' Pressing 200 queue builder (STRICT UNSCHEDULED) returning PARENT RECORD
-    ' Enhancements:
-    '   1) Still filters only op=200 AND is_scheduled=False
-    '   2) Uses ParentRecord as the queue item instead of OrdersID
-    '   3) Adds prev_op_is_scheduled as a priority signal (WIP reduction)
-    '   4) Adds Resource Group to candidates and keeps batching at Resource Group level
-    '   5) Keeps Cycle ranking via GetCycleRank(), but you can later replace it with a map/dictionary
-    '   6) Sorting stack (within resource group) is now:
-    '        Tier -> Due -> PrevOpPriority -> Earliest -> CycleRank -> TypeKey -> ParentRecord
-    ' ----------------------
+    ' Pressing has two separate decisions:
+    '   1. Rank eligible orders by the established WIP/date rules (this class).
+    '   2. Choose and preserve die-ring campaigns on actual presses (the scheduler).
+    ' Keeping them separate avoids confusing a queue sort with a machine plan.
+    ' Legacy public callers still receive parent records; runPress uses the actual
+    ' operation record plus these attributes so each placement can be validated.
 
-    ' Candidate structure used for sorting/batching
-    Private Class Candidate
+    Friend Class Candidate
         Public Property RecordNo As Integer
         Public Property OrderNo As String
         Public Property OperationNumber As Integer
@@ -24,8 +16,8 @@
         Public Property Due As DateTime                  ' Pressing Due date (date-only)
         Public Property Tier As Integer                  ' 0=approaching, 1=late, 2=other
         Public Property WheelDia As String
-        Public Property WheelPin As String
-        Public Property TypeKey As String                ' WheelDia|WheelThickness
+        Public Property WheelPin As String               ' Bore/pin; legacy table column is called Wheel thickness
+        Public Property TypeKey As String                ' Legacy final rank tie-break: ring|pin, NOT the campaign key
         Public Property CycleRank As Integer
         Public Property MissingEarliest As Boolean
         Public Property MissingDue As Boolean
@@ -47,6 +39,20 @@
                                           Optional prioritizePrevOpFirst As Boolean = False,
                                           Optional debug As SchedulerDebugCollector = Nothing) As List(Of Integer)
 
+        ' Retain the original public entrypoint for callers that need parent records.
+        ' Actual pressing now uses the ranked operation candidates below; campaign
+        ' continuity is decided on the chosen machine, not by shuffling this queue.
+        Return BuildRankedCandidates(dt, currentDate, approachingDays,
+                                     prioritizePrevOpFirst, debug).
+            Select(Function(c) c.ParentRecord).Distinct().ToList()
+    End Function
+
+    Friend Function BuildRankedCandidates(dt As DataTable,
+                                         currentDate As DateTime,
+                                         Optional approachingDays As Integer = 2,
+                                         Optional prioritizePrevOpFirst As Boolean = False,
+                                         Optional debug As SchedulerDebugCollector = Nothing) As List(Of Candidate)
+
         If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
 
         ' ---- Required columns (these must exist in dt) ----
@@ -58,6 +64,8 @@
         SharedHelpers.RequireColumn(dt, "wip_ready_time")
         SharedHelpers.RequireColumn(dt, "wip_status")
         SharedHelpers.RequireColumn(dt, "wip_reject_reason")
+        SharedHelpers.RequireColumn(dt, "wip_prev_op_rec")
+        SharedHelpers.RequireColumn(dt, "wip_prev_op_released")
         SharedHelpers.RequireColumn(dt, "Resource Group")
         SharedHelpers.RequireColumn(dt, "Operation Number")
         SharedHelpers.RequireColumn(dt, "Pressing earliest start")
@@ -82,6 +90,9 @@
             ' 2) Filter: STRICT UNSCHEDULED only
             Dim isScheduled As Boolean = SharedHelpers.SafeBool(r("is_scheduled"))
             If isScheduled Then Continue For
+            ' A completed/actualized operation must never re-enter the campaign
+            ' scheduler merely because it has no current planning-board allocation.
+            If SharedHelpers.IsCompletedOrActualizedRow(r) Then Continue For
 
             ' 3) Queue key: parent_record must be valid
             Dim parentRec As Integer = SharedHelpers.SafeInt(r("parent_record"))
@@ -121,8 +132,6 @@
             Dim cycleRank As Integer = GetCycleRank(cycleType)
 
             ' 9) Previous operation scheduled? (WIP reduction signal)
-            'Dim prevOpIsScheduled As Boolean = SharedHelpers.SafeBool(r("prev_op_is_scheduled"))
-            'Dim prevOpPriority As Integer = If(prevOpIsScheduled, 0, 1)
             Dim wipStatus As String = SharedHelpers.SafeStr(r("wip_status")).Trim()
             If Not wipStatus.Equals("Candidate", StringComparison.OrdinalIgnoreCase) Then Continue For
 
@@ -132,6 +141,22 @@
             Dim wipScore As Integer = SharedHelpers.SafeInt(r("wip_score"))
             Dim wipReadyTime As DateTime = SharedHelpers.SafeDate(r("wip_ready_time"))
             Dim wipRejectReason As String = SharedHelpers.SafeStr(r("wip_reject_reason"))
+            ' The common snapshot marks some rows Candidate even when their
+            ' predecessor is not released (other stages use that broader pool).
+            ' Pressing must independently enforce readiness. A first routing
+            ' operation has no predecessor; otherwise a valid release is required.
+            If SharedHelpers.SafeInt(r("wip_prev_op_rec")) > 0 AndAlso
+               (Not SharedHelpers.SafeBool(r("wip_prev_op_released")) OrElse wipReadyTime = DateTime.MinValue) Then
+                If debug IsNot Nothing AndAlso debug.Enabled Then
+                    debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+                        .OptimizerName = "pressingOptimizer_vf", .Stage = "Pressing",
+                        .StepName = "Readiness", .RecordNo = SharedHelpers.SafeInt(r("OrdersID")),
+                        .OrderNo = SharedHelpers.SafeStr(r("Order No")), .OperationNumber = 200,
+                        .Included = False, .ReasonCode = "PRESSING_PREV_OP_NOT_READY",
+                        .ReasonDetail = "Predecessor is unreleased or its release time is missing."})
+                End If
+                Continue For
+            End If
             ' 0 = “prev op is already scheduled” → better
             ' 1 = “prev op not scheduled / unknown” → slightly worse
 
@@ -160,7 +185,7 @@
         Next
 
         ' ---- Sorting: the exact queue priority order (within Resource Groups) ----
-        ' We sort globally but later the batching step will keep clustering at ResourceGroup level.
+        ' The campaign scheduler uses this rank to seed new campaigns and protect urgent work.
         ' Order:
         ' 1) Tier asc (0,1,2)
         ' 2) Due asc (missing due goes last)
@@ -169,28 +194,10 @@
         ' 5) CycleRank desc (higher rank first)
         ' 6) TypeKey asc (clusters same Dia|Thickness)
         ' 7) ParentRecord asc (stable tie-breaker)
-        'Dim sorted As List(Of Candidate) =
-        'candidates.OrderBy(Function(c) c.Tier) _
-        '          .ThenBy(Function(c) If(c.MissingDue, DateTime.MaxValue, c.Due)) _
-        '          .ThenBy(Function(c) c.PrevOpPriority) _
-        '          .ThenBy(Function(c) If(c.MissingEarliest, DateTime.MaxValue, c.Earliest)) _
-        '          .ThenByDescending(Function(c) c.CycleRank) _
-        '          .ThenBy(Function(c) c.TypeKey) _
-        '          .ThenBy(Function(c) c.ParentRecord) _
-        '          .ToList()
-
         Dim sorted As List(Of Candidate)
 
         If prioritizePrevOpFirst Then
             ' WIP-first strategy
-            'sorted = candidates.OrderBy(Function(c) c.PrevOpPriority) _
-            '               .ThenBy(Function(c) c.Tier) _
-            '               .ThenBy(Function(c) If(c.MissingDue, DateTime.MaxValue, c.Due)) _
-            '               .ThenBy(Function(c) If(c.MissingEarliest, DateTime.MaxValue, c.Earliest)) _
-            '               .ThenByDescending(Function(c) c.CycleRank) _
-            '               .ThenBy(Function(c) c.TypeKey) _
-            '               .ThenBy(Function(c) c.ParentRecord) _
-            '               .ToList()
             sorted = candidates.OrderByDescending(Function(c) c.WipScore) _
                    .ThenBy(Function(c) c.Tier) _
                    .ThenBy(Function(c) If(c.MissingDue, DateTime.MaxValue, c.Due)) _
@@ -212,8 +219,10 @@
         End If
 
 
-        ' ---- Greedy batching: TypeKey clustering at RESOURCE GROUP level ----
-        Dim batched As List(Of Candidate) = GreedyTypeBatchingWithinTier(sorted, lookahead:=50)
+        ' Preserve WIP/date priority as the seed ranking. Do NOT pull forward an
+        ' exact ring+pin combination here: that old shortcut fragmented ring runs
+        ' across due dates and could not enforce machine-level campaign continuity.
+        Dim batched As List(Of Candidate) = sorted
 
         If debug IsNot Nothing AndAlso debug.Enabled Then
             Dim beforeCount As Integer = dt.AsEnumerable().Count(Function(r) SharedHelpers.SafeInt(r("Operation Number")) = 200)
@@ -231,72 +240,14 @@
                     .AfterCount = batched.Count,
                     .Included = True,
                     .ReasonCode = SchedulerDebugReasonCodes.OK_INCLUDED,
-                    .ReasonDetail = "Included in final pressing parent queue.",
+                    .ReasonDetail = "Included in ranked pressing candidates.",
                     .RankScore = c.WipScore,
                     .RankBreakdown = "Tier=" & c.Tier.ToString() & ";CycleRank=" & c.CycleRank.ToString() & ";Type=" & c.TypeKey
                 })
             Next
         End If
 
-        ' ---- Output: return parent_record list (distinct to be safe) ----
-        Return batched.Select(Function(c) c.ParentRecord).Distinct().ToList()
-    End Function
-
-    ' ----------------------
-    ' Greedy batching (resource-group-aware)
-    ' Pull-forward rules:
-    '   - same Tier
-    '   - same ResourceGroup
-    '   - same TypeKey (WheelDia|WheelThickness)
-    '   - same Due date
-    ' This is a "soft clustering" step; it does NOT change tier ordering.
-    ' ----------------------
-    Private Function GreedyTypeBatchingWithinTier(sorted As List(Of Candidate),
-                                             Optional lookahead As Integer = 50) As List(Of Candidate)
-
-        If sorted Is Nothing OrElse sorted.Count <= 2 Then
-            Return If(sorted, New List(Of Candidate)())
-        End If
-
-        Dim work As New List(Of Candidate)(sorted)
-        Dim result As New List(Of Candidate)(work.Count)
-
-        Dim i As Integer = 0
-        While i < work.Count
-            Dim cur As Candidate = work(i)
-            result.Add(cur)
-
-            ' Only attempt pull-forward if TypeKey is meaningful
-            If Not String.IsNullOrEmpty(cur.TypeKey) Then
-                Dim inspected As Integer = 0
-                Dim j As Integer = i + 1
-
-                While j < work.Count AndAlso inspected < lookahead
-                    Dim cand As Candidate = work(j)
-
-                    ' Resource-group-level batching: do NOT pull across different groups
-                    If cand.Tier = cur.Tier AndAlso
-                   String.Equals(cand.ResourceGroup, cur.ResourceGroup, StringComparison.OrdinalIgnoreCase) AndAlso
-                   cand.TypeKey = cur.TypeKey AndAlso
-                   cand.Due = cur.Due Then
-
-                        ' Pull this candidate forward, just after cur
-                        result.Add(cand)
-                        work.RemoveAt(j)
-
-                        ' Do NOT advance j here, because we just shifted the list left.
-                        Continue While
-                    End If
-
-                    j += 1
-                    inspected += 1
-                End While
-            End If
-
-            i += 1
-        End While
-
-        Return result
+        Return batched
     End Function
 
     ' ----------------------

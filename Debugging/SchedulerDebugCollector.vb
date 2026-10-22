@@ -36,10 +36,15 @@ Public Class SchedulerDebugCollector
     End Sub
 
     Public Shared Function IsEnabledByConfiguration() As Boolean
+        ' Operational kill switch: applies to the host process and overrides even
+        ' an explicit TRUE in its .config file. Restart Opcenter after changing a
+        ' persistent Windows environment variable so it inherits the new value.
+        If IsTrue(Environment.GetEnvironmentVariable("GN_SCHEDULER_DIAGNOSTICS_OFF")) Then Return False
         Return ReadEnabledSetting("SchedulerDebugEnabled", "GN_SCHEDULER_DEBUG")
     End Function
 
     Public Shared Function IsMetricsEnabledByConfiguration() As Boolean
+        If IsTrue(Environment.GetEnvironmentVariable("GN_SCHEDULER_DIAGNOSTICS_OFF")) Then Return False
         Return ReadEnabledSetting("SchedulerMetricsEnabled", "GN_SCHEDULER_METRICS")
     End Function
 

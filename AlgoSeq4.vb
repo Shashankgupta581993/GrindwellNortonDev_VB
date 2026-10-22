@@ -1190,104 +1190,152 @@ Public Class AlgoSeq4
     Public Function runPress(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
         BeginSchedulerDebug(preactor)
-        Dim planningboard As IPlanningBoard = preactor.PlanningBoard
-        Dim opRec As Integer
-        Dim routingdt As DataTable
-        Dim ResRec As Integer
-        Dim ResRecs As IEnumerable(Of Integer)
-        Dim opTimes As Nullable(Of Preactor.OperationTimes)
-        Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
-        routingdt = readOrderTable(preactor)
-        Dim currentDate As DateTime = planningboard.TerminatorTime
-        Dim pressingObj As New pressingOptimizer_vf()
-        Dim pressingQueue =
-            pressingObj.BuildPressing200Queue(
-                routingdt,
-                currentDate,
-                approachingDays:=
-                    SharedHelpers.OptimizerSettingsCatalog.PressEffectiveApproachingDays,
-                prioritizePrevOpFirst:=
-                    SharedHelpers.OptimizerSettingsCatalog.PressEffectivePrioritizePreviousOperation,
-                debug:=_schedulerDebug)
-        CreateRankedOperationQueue(preactor, planningboard, ordersTable, "JobsQueue", pressingQueue)
-        Dim opNoField As Integer = preactor.GetFieldNumber(ordersTable, "Op. No.")
+        Try
+            Dim board As IPlanningBoard = preactor.PlanningBoard
+            Dim routing As DataTable = readOrderTable(preactor)
+            Dim rows = SharedHelpers.BuildOperationRowIndex(routing)
+            Dim optimizer As New pressingOptimizer_vf()
+            Dim ranked = optimizer.BuildRankedCandidates(routing, board.TerminatorTime,
+                SharedHelpers.OptimizerSettingsCatalog.PressEffectiveApproachingDays,
+                SharedHelpers.OptimizerSettingsCatalog.PressEffectivePrioritizePreviousOperation,
+                _schedulerDebug)
+            Dim orders As New List(Of PressCampaignOrder)
+            Dim history As New List(Of PressCampaignSlot)
 
-        ' Snapshot for debugging
-        Dim jobsQueueSnapshot As List(Of Integer) = GetQueueSnapshot(planningboard, "JobsQueue")
-
-        While (planningboard.GetOperationInQueue("JobsQueue", 1, opRec))
-
-            ' Take the next operation out of the ranked queue so we can decide where to load it.
-            planningboard.RemoveOperationFromQueue("JobsQueue", opRec)
-
-            ' Inner loop: schedule this operation and then walk to subsequent operations
-            ' (your "family" / routing chain) using GetNextOperation.
-            While (opRec > 0) ' this condition is wrong
-                If preactor.ReadFieldInt(ordersTable, opNoField, opRec) > 200 Then Exit While
-                If preactor.ReadFieldInt(ordersTable, opNoField, opRec) = 200 Then
-                    ' Find all valid alternate resources for this operation.
-                    ResRecs = planningboard.FindResources(opRec)
-
-                    ' Track the best (earliest) feasible candidate we find.
-                    Dim bestResRec As Integer = 0
-                    Dim bestOpTimes As Nullable(Of Preactor.OperationTimes) = Nothing
-
-                    ' Loop through *all* alternate resources and test feasibility on each.
-                    For Each ResRec In ResRecs
-
-                        ' Test if the operation can be placed on this resource, and get the timing result.
-                        ' TerminatorTime is the boundary between schedule history and schedule future;
-                        ' using it here aligns with "schedule as soon as possible" in the future horizon. :contentReference[oaicite:3]{index=3}
-                        opTimes = planningboard.QueryOperationOnResource(opRec, ResRec, planningboard.TerminatorTime)
-
-                        If opTimes.HasValue Then
-                            ' This resource is feasible. Compare it to the current best candidate.
-                            ' We want the earliest possible start time (ChangeStart).
-                            If (Not bestOpTimes.HasValue) Then
-                                ' First feasible candidate becomes the best by default.
-                                bestResRec = ResRec
-                                bestOpTimes = opTimes
-                            Else
-                                ' Replace best candidate if this one starts earlier.
-                                If opTimes.Value.ChangeStart < bestOpTimes.Value.ChangeStart Then
-                                    bestResRec = ResRec
-                                    bestOpTimes = opTimes
-                                End If
-                            End If
-                        End If
-
-                    Next ' evaluate next alternate resource
-
-                    ' After scanning all alternates:
-                    If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
-                        If planningboard.IsOperationScheduled(opRec) Then Exit While
-                        ' Load the operation onto the resource that gives the earliest feasible start.
-                        PutOperationWithTrace(preactor, planningboard, "Pressing", opRec, bestResRec, bestOpTimes.Value.ChangeStart, "Forward")
-                        Try
-                            'planningboard.PutOperationOnResource(planningboard.GetPreviousOperation(opRec, 1), bestResRec, bestOpTimes.Value.ChangeStart.AddDays(-1))
-                            'planningboard.PutOperationOnResource(planningboard.GetPreviousOperation(planningboard.GetPreviousOperation(opRec, 1), 1), bestResRec, bestOpTimes.Value.ChangeStart.AddDays(-1))
-                        Catch ex As Exception
-
-                        End Try
-
-                    Else
-                        ' No feasible resource was found.
-                        ' Practical meaning:
-                        '   - This operation cannot be scheduled on any alternate resource at/after the terminator boundary
-                        '     under current constraints (calendars, setups, secondary constraints, etc.).
-                        ' Leave it unscheduled (or handle with a custom queue / reason code if your design requires).
-                    End If
+            ' Read the live allocation, not Required Resource: an order selected
+            ' from a group still has one concrete machine in its scheduled history.
+            ' Both historical and future allocations are preserved by the engine.
+            For Each row As DataRow In routing.Rows
+                If SharedHelpers.SafeInt(row("Operation Number")) <> 200 OrElse
+                   Not SharedHelpers.SafeBool(row("is_scheduled")) Then Continue For
+                Dim record = SharedHelpers.SafeInt(row("OrdersID"))
+                Dim times = board.GetOperationTimes(record)
+                If Not times.HasValue Then
+                    Throw New InvalidOperationException("Cannot reconstruct pressing tooling history for scheduled record " & record.ToString())
                 End If
-                ' Move to the next operation in the routing chain.
-                opRec = planningboard.GetNextOperation(opRec, 1) ' API-supported routing traversal:contentReference[oaicite:4]{index=4}
+                history.Add(New PressCampaignSlot With {
+                    .RecordNo = record, .Resource = times.Value.Resource,
+                    .Start = times.Value.OperationTimes.ChangeStart,
+                    .Finish = times.Value.OperationTimes.ProcessEnd,
+                    .Ring = SharedHelpers.SafeStr(row("Wheel Dia")),
+                    .Pin = SharedHelpers.SafeStr(row("Wheel thickness"))})
+            Next
 
-            End While ' next operation in chain
+            For rank As Integer = 0 To ranked.Count - 1
+                Dim candidate = ranked(rank)
+                Dim row = rows(candidate.RecordNo)
+                Dim order As New PressCampaignOrder With {
+                    .RecordNo = candidate.RecordNo, .Rank = rank,
+                    .Ring = candidate.WheelDia, .Pin = candidate.WheelPin,
+                    .Earliest = candidate.Earliest, .Ready = candidate.WipReadyTime,
+                    .Due = candidate.Due}
+                ' FindResources retains Opcenter eligibility. Intersect it with an
+                ' explicit assignment so campaign preference cannot move a fixed job.
+                Dim required = SharedHelpers.SafeStr(row("Required Resource")).Trim()
+                Try
+                    Dim fixedResource As Integer = 0
+                    If required <> "" AndAlso Not required.Equals("Select from Group", StringComparison.OrdinalIgnoreCase) Then
+                        fixedResource = board.GetResourceNumber(required)
+                        If fixedResource <= 0 Then
+                            TracePressCampaign(New PressCampaignDecision With {.RecordNo = order.RecordNo,
+                                .Reason = "PRESSING_INVALID_FIXED_RESOURCE", .Detail = "Unknown fixed press: " & required})
+                            Continue For
+                        End If
+                    End If
+                    order.Resources = board.FindResources(order.RecordNo).
+                        Where(Function(r) r > 0 AndAlso (fixedResource = 0 OrElse r = fixedResource)).Distinct().OrderBy(Function(r) r).ToList()
+                Catch ex As Exception
+                    TracePressCampaign(New PressCampaignDecision With {.RecordNo = order.RecordNo,
+                        .Reason = "PRESSING_RESOURCE_LOOKUP_FAILED", .Detail = ex.Message})
+                    Continue For
+                End Try
+                orders.Add(order)
+            Next
 
-        End While ' next op in JobsQueue
-        FinishSchedulerDebug(preactor)
-        Return 0
+            ' Integration seam for the later changeover work:
+            ' QueryPressCampaign MUST include any future setup duration before
+            ' feasibility is decided. CommitPressCampaign must place the same
+            ' interval exactly once; do not append setup again after querying it.
+            ' No reporter means no campaign trace construction/export in the hot
+            ' search path. Disabled diagnostics must not format strings per query.
+            Dim campaignReporter As Action(Of PressCampaignDecision) = Nothing
+            If _schedulerDebug IsNot Nothing AndAlso _schedulerDebug.Enabled Then campaignReporter = AddressOf TracePressCampaign
+            Dim scheduler As New PressCampaignScheduler(board.TerminatorTime, history,
+                Function(order, resource, earliest) QueryPressCampaign(board, order, resource, earliest),
+                Function(slot) CommitPressCampaign(preactor, board, slot),
+                campaignReporter)
+            scheduler.Run(orders)
+            Return 0
+        Finally
+            ' Export partial diagnostics even if history or actual placement fails.
+            FinishSchedulerDebug(preactor)
+        End Try
     End Function
 
+    Private Function QueryPressCampaign(board As IPlanningBoard, order As PressCampaignOrder,
+                                        resource As Integer, earliest As DateTime) As PressCampaignSlot
+        Try
+            ' The run snapshot excludes scheduled operations; commit performs the
+            ' live recheck. Avoid a second COM call for every feasibility query.
+            Dim result = board.QueryOperationOnResource(order.RecordNo, resource, earliest)
+            If Not result.HasValue Then Return Nothing
+            Return New PressCampaignSlot With {.RecordNo = order.RecordNo, .Resource = resource,
+                .Ring = order.Ring, .Pin = order.Pin, .Start = result.Value.ChangeStart,
+                .Finish = result.Value.ProcessEnd}
+        Catch ex As Exception
+            TracePressCampaign(New PressCampaignDecision With {.RecordNo = order.RecordNo,
+                .Resource = resource, .Reason = "PRESSING_QUERY_FAILED", .Detail = ex.Message})
+            Return Nothing
+        End Try
+    End Function
+
+    Private Function CommitPressCampaign(preactor As IPreactor, board As IPlanningBoard,
+                                         slot As PressCampaignSlot) As PressCampaignSlot
+        ' slot.PreviousRing / PreviousPin, Ring / Pin and Transition describe the
+        ' decided tooling change before placement. No workbook setup duration is
+        ' charged here. When that feature is added, QueryPressCampaign must first
+        ' reserve the same setup time, otherwise this commit would no longer match
+        ' the capacity and urgency checks used to select the order.
+        ' Do not trust a successful API return alone. Re-read actual allocation.
+        ' If the API throws AFTER placing, still return its actual state so the
+        ' engine does not forget a ring switch that really occurred on the board.
+        If board.IsOperationScheduled(slot.RecordNo) Then
+            Throw New InvalidOperationException("Pressing record was scheduled externally during this run: " & slot.RecordNo.ToString())
+        End If
+        Try
+            PutOperationWithTrace(preactor, board, "Pressing", slot.RecordNo,
+                                  slot.Resource, slot.Start, "Forward")
+        Catch ex As Exception
+            TracePressCampaign(New PressCampaignDecision With {.RecordNo = slot.RecordNo,
+                .Resource = slot.Resource, .Reason = "PRESSING_PLACEMENT_EXCEPTION", .Detail = ex.Message})
+            If Not board.IsOperationScheduled(slot.RecordNo) Then Return Nothing
+        End Try
+        If Not board.IsOperationScheduled(slot.RecordNo) Then Return Nothing
+        Dim actual = board.GetOperationTimes(slot.RecordNo)
+        If Not actual.HasValue Then Throw New InvalidOperationException("Placed pressing operation has no readable actual interval.")
+        Return New PressCampaignSlot With {.RecordNo = slot.RecordNo, .Resource = actual.Value.Resource,
+            .Ring = slot.Ring, .Pin = slot.Pin, .Start = actual.Value.OperationTimes.ChangeStart,
+            .Finish = actual.Value.OperationTimes.ProcessEnd}
+    End Function
+
+    Private Sub TracePressCampaign(decision As PressCampaignDecision)
+        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Enabled Then Return
+        Dim detail = decision.Detail & ";Resource=" & decision.Resource.ToString(CultureInfo.InvariantCulture) &
+            ";PreviousRing=" & decision.PreviousRing & ";PreviousPin=" & decision.PreviousPin &
+            ";NextRing=" & decision.NextRing & ";NextPin=" & decision.NextPin &
+            ";Transition=" & decision.Transition &
+            ";CooldownUntil=" & If(decision.CooldownUntil.HasValue,
+                decision.CooldownUntil.GetValueOrDefault().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), "") &
+            ";Start=" & If(decision.Start.HasValue, decision.Start.GetValueOrDefault().ToString("s"), "") &
+            ";Finish=" & If(decision.Finish.HasValue, decision.Finish.GetValueOrDefault().ToString("s"), "")
+        _schedulerDebug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
+            .OptimizerName = "PressCampaignScheduler", .Stage = "Pressing", .StepName = "CampaignDecision",
+            .RecordNo = decision.RecordNo, .OperationNumber = 200,
+            .Included = decision.Reason = "PRESSING_CAMPAIGN_CONTINUED" OrElse
+                        decision.Reason = "PRESSING_CAMPAIGN_STARTED" OrElse
+                        decision.Reason = "PRESSING_URGENCY_INTERRUPTION",
+            .ReasonCode = decision.Reason, .ReasonDetail = detail})
+    End Sub
 
     Public Function runPressToFiring(ByRef preactorComObject As PreactorObj,
                                  ByRef pespComObject As Object) As Integer
