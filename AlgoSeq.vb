@@ -12,6 +12,7 @@ Public Class AlgoSeq
     Public Function Run(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
 
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        If Not MesSchedulingDates.TryBeginAction(preactor, preactorComObject) Then Return -1
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
         Dim ordersTable As Integer
@@ -83,7 +84,8 @@ Public Class AlgoSeq
                 ' After scanning all alternates:
                 If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
                     ' Load the operation onto the resource that gives the earliest feasible start.
-                    planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
+                    Dim mesPlacementSucceeded As Boolean = planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
+                    If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, opRec)
                 Else
                     ' No feasible resource was found.
                     ' Practical meaning:

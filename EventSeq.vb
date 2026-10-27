@@ -11,6 +11,7 @@ Imports Preactor.Interop.PreactorObject
 Public Class EventSeq
     Public Function Run(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        If Not MesSchedulingDates.TryBeginAction(preactor, preactorComObject) Then Return -1
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
         Dim EventParameters = planningboard.NextEvent()
@@ -71,6 +72,7 @@ Public Class EventSeq
 
     ' Make method Public and fix missing parameters
     Public Function ScheduleOperations(preactor As IPreactor, QName As String, ResRec As Integer, TestEventTime As DateTime) As Integer
+        MesSchedulingDates.RequirePreparedAction(preactor)
         ' Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
@@ -88,7 +90,8 @@ Public Class EventSeq
             End If
 
             If TestOpResults.Value.ChangeStart <= TestEventTime.AddDays(planningboard.SchedulingAccuracy) Then
-                planningboard.PutOperationOnResource(OpRecord, ResRec, TestOpResults.Value.ChangeStart)
+                Dim mesPlacementSucceeded As Boolean = planningboard.PutOperationOnResource(OpRecord, ResRec, TestOpResults.Value.ChangeStart)
+                If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, OpRecord)
 
             Else
                 ' if the operation cannot start now, check the next job in the queue

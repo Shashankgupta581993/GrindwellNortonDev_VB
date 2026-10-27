@@ -124,6 +124,7 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="MetadataExplorerRepository.vb" />
+    <Compile Include="MesSchedulingDates.vb" />
     <Compile Include="My Project\Settings.Designer.vb">
       <AutoGen>True</AutoGen>
       <DesignTimeSharedInput>True</DesignTimeSharedInput>

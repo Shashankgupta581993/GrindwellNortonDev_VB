@@ -261,6 +261,7 @@ Public Class AlgoSeq3
         InitLogging()
 
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        If Not MesSchedulingDates.TryBeginAction(preactor, preactorComObject) Then Return -1
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
         ' ------------------------------------------------------
@@ -497,7 +498,8 @@ Public Class AlgoSeq3
             Dim startTime As DateTime = bestTimes.Value.ChangeStart
             If startTime < op.PressEarliestStart Then startTime = op.PressEarliestStart
 
-            planningboard.PutOperationOnResource(op.OpRec, bestResRec, startTime)
+            Dim mesPlacementSucceeded As Boolean = planningboard.PutOperationOnResource(op.OpRec, bestResRec, startTime)
+            If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, op.OpRec)
 
             ' 3) Update per-resource memories (cooldown + last key for changeover)
             Dim keyNow As String = $"{op.WheelDia}||{op.WheelPin}"
@@ -735,7 +737,8 @@ Public Class AlgoSeq3
                 ' Ensure start in window (if not, skip)
                 If startTime.TimeOfDay > MorningShiftEnd Then Continue For
 
-                planningboard.PutOperationOnResource(op290Rec, resRec, startTime)
+                Dim mesPlacementSucceeded As Boolean = planningboard.PutOperationOnResource(op290Rec, resRec, startTime)
+                If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, op290Rec)
 
                 Dim resName = TryGetResourceNameSafe(preactor, resRec)
                 LogDecision("FIRING_PUT290", op290Rec, op300Info.OrderNo, 290, "(LOAD)", resName, day,
@@ -767,7 +770,8 @@ Public Class AlgoSeq3
 
             ' Place at earliest feasible start (Opcenter will account for precedence if configured)
             Dim startTime = test.Value.ChangeStart
-            planningboard.PutOperationOnResource(op300Rec, resRec, startTime)
+            Dim mesPlacementSucceeded As Boolean = planningboard.PutOperationOnResource(op300Rec, resRec, startTime)
+            If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, op300Rec)
 
             Dim resName = TryGetResourceNameSafe(preactor, resRec)
 
@@ -832,7 +836,8 @@ Public Class AlgoSeq3
                 Dim test = planningboard.TestOperationOnResource(nextRec, resRec, planningboard.TerminatorTime)
                 If Not test.HasValue Then Continue For
 
-                planningboard.PutOperationOnResource(nextRec, resRec, test.Value.ChangeStart)
+                Dim mesPlacementSucceeded As Boolean = planningboard.PutOperationOnResource(nextRec, resRec, test.Value.ChangeStart)
+                If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, nextRec)
 
                 Dim resName = TryGetResourceNameSafe(preactor, resRec)
                 LogDecision("FWD_PUT", nextRec, info.OrderNo, info.OpNo, info.ResGroup, resName, DateTime.Today,

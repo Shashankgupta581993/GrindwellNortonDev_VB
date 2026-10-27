@@ -24,6 +24,7 @@ Public Class AlgoSeq4
 
     Public Function ActualSchedule(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        If Not MesSchedulingDates.TryBeginAction(preactor, preactorComObject) Then Return -1
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
         Dim ordersTable As Integer
@@ -82,7 +83,8 @@ Public Class AlgoSeq4
             ' After scanning all alternates:
             If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
                 ' Load the operation onto the resource that gives the earliest feasible start.
-                planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
+                Dim mesPlacementSucceeded As Boolean = planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
+                If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, opRec)
             Else
                 ' No feasible resource was found.
                 ' Practical meaning:
@@ -103,6 +105,7 @@ Public Class AlgoSeq4
     Public Function Schedule400(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim actionWatch As Stopwatch = Stopwatch.StartNew()
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        If Not MesSchedulingDates.TryBeginAction(preactor, preactorComObject) Then Return -1
         BeginSchedulerDebug(preactor)
         Dim actionMetrics As SchedulerActionMetricsRow =
             BeginActionMetrics("Schedule400", actionWatch)
@@ -177,9 +180,10 @@ Public Class AlgoSeq4
                         actionMetrics.PlacementAttempts += 1
                     End If
 
-                    planningboard.PutOperationOnResource(opRec,
+                    Dim mesPlacementSucceeded As Boolean = planningboard.PutOperationOnResource(opRec,
                                                          bestResRec,
                                                          bestChangeStart)
+                    If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, opRec)
 
                     If actionMetrics IsNot Nothing Then
                         actionMetrics.PlacementSuccesses += 1
@@ -205,6 +209,7 @@ Public Class AlgoSeq4
     Public Function runFiring(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         ' Batch firing logic
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        If Not MesSchedulingDates.TryBeginAction(preactor, preactorComObject) Then Return -1
         BeginSchedulerDebug(preactor)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
         Dim ordersTable As Integer = preactor.FindFirstClassificationString("LAUNCH TIME").Value.FormatNumber
@@ -340,6 +345,7 @@ Public Class AlgoSeq4
                         PutOperationWithTrace(preactor, planningboard, "BatchLoading", PREVIOUSOP, LOADBICK, Times.Value.ProcessStart, "Backward")
                     End If
                 Catch ex As Exception
+                    If TypeOf ex Is MesSchedulingException Then Throw
                     ' Silently handled per original logic
                 End Try
             End If
@@ -367,6 +373,7 @@ Public Class AlgoSeq4
                              ByRef pespComObject As Object) As Integer
 
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        If Not MesSchedulingDates.TryBeginAction(preactor, preactorComObject) Then Return -1
         BeginSchedulerDebug(preactor)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
@@ -508,6 +515,7 @@ Public Class AlgoSeq4
 
     Public Function runFiring2(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        If Not MesSchedulingDates.TryBeginAction(preactor, preactorComObject) Then Return -1
         BeginSchedulerDebug(preactor)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
@@ -635,6 +643,7 @@ Public Class AlgoSeq4
 
         Dim actionWatch As Stopwatch = Stopwatch.StartNew()
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        If Not MesSchedulingDates.TryBeginAction(preactor, preactorComObject) Then Return -1
         BeginSchedulerDebug(preactor)
         Dim actionMetrics As SchedulerActionMetricsRow =
             BeginActionMetrics("runFiringFollowOn", actionWatch)
@@ -842,6 +851,7 @@ Public Class AlgoSeq4
     Public Function runFix(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim actionWatch As Stopwatch = Stopwatch.StartNew()
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        If Not MesSchedulingDates.TryBeginAction(preactor, preactorComObject) Then Return -1
         BeginSchedulerDebug(preactor)
         Dim actionMetrics As SchedulerActionMetricsRow =
             BeginActionMetrics("runFix", actionWatch)
@@ -910,9 +920,10 @@ Public Class AlgoSeq4
                                             actionMetrics.PlacementAttempts += 1
                                         End If
 
-                                        planningboard.PutOperationOnResource(i,
+                                        Dim mesPlacementSucceeded As Boolean = planningboard.PutOperationOnResource(i,
                                                                              dryer,
                                                                              times.Value.ProcessStart)
+                                        If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, i)
                                         lookupCache.MarkOperationPlaced(i)
 
                                         If actionMetrics IsNot Nothing Then
@@ -965,9 +976,10 @@ Public Class AlgoSeq4
                                         actionMetrics.PlacementAttempts += 1
                                     End If
 
-                                    planningboard.PutOperationOnResource(previousOpRec,
+                                    Dim mesPlacementSucceeded As Boolean = planningboard.PutOperationOnResource(previousOpRec,
                                                                          resourceRec,
                                                                          targetTime)
+                                    If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, previousOpRec)
                                     lookupCache.MarkOperationPlaced(previousOpRec)
 
                                     If actionMetrics IsNot Nothing Then
@@ -984,6 +996,7 @@ Public Class AlgoSeq4
                     End If
 
                 Catch ex As Exception
+                    If TypeOf ex Is MesSchedulingException Then Throw
                     If actionMetrics IsNot Nothing Then
                         actionMetrics.HandledExceptions += 1
                     End If
@@ -1011,6 +1024,7 @@ Public Class AlgoSeq4
 
         Dim actionWatch As Stopwatch = Stopwatch.StartNew()
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        If Not MesSchedulingDates.TryBeginAction(preactor, preactorComObject) Then Return -1
         BeginSchedulerDebug(preactor)
         Dim actionMetrics As SchedulerActionMetricsRow =
             BeginActionMetrics("afterFiring", actionWatch)
@@ -1084,6 +1098,7 @@ Public Class AlgoSeq4
 
     Public Function untilPress(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        If Not MesSchedulingDates.TryBeginAction(preactor, preactorComObject) Then Return -1
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
         Dim opRec As Integer
         Dim routingdt As DataTable
@@ -1169,7 +1184,8 @@ Public Class AlgoSeq4
                 If bestOpTimes.HasValue AndAlso bestResRec > 0 Then
                     ' Load the operation onto the resource that gives the earliest feasible start.
                     ' planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ChangeStart)
-                    planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ProcessStart.AddDays(-1))
+                    Dim mesPlacementSucceeded As Boolean = planningboard.PutOperationOnResource(opRec, bestResRec, bestOpTimes.Value.ProcessStart.AddDays(-1))
+                    If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, opRec)
                 Else
                     ' No feasible resource was found.
                     ' Practical meaning:
@@ -1189,6 +1205,7 @@ Public Class AlgoSeq4
 
     Public Function runPress(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        If Not MesSchedulingDates.TryBeginAction(preactor, preactorComObject) Then Return -1
         BeginSchedulerDebug(preactor)
         Try
             Dim board As IPlanningBoard = preactor.PlanningBoard
@@ -1306,6 +1323,7 @@ Public Class AlgoSeq4
             PutOperationWithTrace(preactor, board, "Pressing", slot.RecordNo,
                                   slot.Resource, slot.Start, "Forward")
         Catch ex As Exception
+            If TypeOf ex Is MesSchedulingException Then Throw
             TracePressCampaign(New PressCampaignDecision With {.RecordNo = slot.RecordNo,
                 .Resource = slot.Resource, .Reason = "PRESSING_PLACEMENT_EXCEPTION", .Detail = ex.Message})
             If Not board.IsOperationScheduled(slot.RecordNo) Then Return Nothing
@@ -1341,6 +1359,7 @@ Public Class AlgoSeq4
                                  ByRef pespComObject As Object) As Integer
 
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+        If Not MesSchedulingDates.TryBeginAction(preactor, preactorComObject) Then Return -1
         BeginSchedulerDebug(preactor)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
@@ -1860,6 +1879,7 @@ Public Class AlgoSeq4
                 If scheduledEnd <> DateTime.MinValue Then testFrom = scheduledEnd
 
             Catch ex As Exception
+                If TypeOf ex Is MesSchedulingException Then Throw
                 If actionMetrics IsNot Nothing Then
                     actionMetrics.HandledExceptions += 1
                 End If
@@ -3092,7 +3112,8 @@ Public Class AlgoSeq4
             If actionMetrics IsNot Nothing Then
                 actionMetrics.PlacementAttempts += 1
             End If
-            planningboard.PutOperationOnResource(opRec, resourceRec, startTime)
+            Dim mesPlacementSucceeded As Boolean = planningboard.PutOperationOnResource(opRec, resourceRec, startTime)
+            If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, opRec)
             If lookupCache IsNot Nothing Then
                 lookupCache.MarkOperationPlaced(opRec)
             End If

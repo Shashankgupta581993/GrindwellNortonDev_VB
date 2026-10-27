@@ -170,6 +170,8 @@ Public Class PostFiringScheduler
                                   queue As List(Of QueueItem),
                                   Optional debug As SchedulerDebugCollector = Nothing) As Integer
 
+        MesSchedulingDates.RequirePreparedAction(preactor)
+
         If queue Is Nothing OrElse queue.Count = 0 Then Return 0
 
         Dim cache As SchedulerRunLookupCache = EnsureLookupCache()
@@ -280,9 +282,10 @@ Public Class PostFiringScheduler
                                 If Metrics IsNot Nothing Then
                                     Metrics.PlacementAttempts += 1
                                 End If
-                                planningboard.PutOperationOnResource(opRec,
+                                Dim mesPlacementSucceeded As Boolean = planningboard.PutOperationOnResource(opRec,
                                                                  bestResRec,
                                                                  bestChangeStart)
+                                If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, opRec)
                                 cache.MarkOperationPlaced(opRec)
                                 If Metrics IsNot Nothing Then
                                     Metrics.PlacementSuccesses += 1
@@ -295,6 +298,7 @@ Public Class PostFiringScheduler
                                                     Nothing)
                                 End If
                             Catch ex As Exception
+                                If TypeOf ex Is MesSchedulingException Then Throw
                                 If trace IsNot Nothing Then
                                     CompleteAttempt(planningboard,
                                                     trace,
@@ -333,6 +337,7 @@ Public Class PostFiringScheduler
                 End While
 
             Catch ex As Exception
+                If TypeOf ex Is MesSchedulingException Then Throw
                 If Metrics IsNot Nothing Then
                     Metrics.HandledExceptions += 1
                 End If
