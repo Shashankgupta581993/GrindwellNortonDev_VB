@@ -219,9 +219,25 @@ Public Class VitrifiedCyclePlanner_Csv
             ' Write headers
             Dim columnNames = dt.Columns.Cast(Of DataColumn)().Select(Function(col) col.ColumnName)
             writer.WriteLine(String.Join(",", columnNames))
-            ' Write rows
+            ' Reuse the field buffer; retain the legacy comma-to-space format.
+            Dim fields(dt.Columns.Count - 1) As String
+            Dim directReads As Boolean = True
+            For Each column As DataColumn In dt.Columns
+                Dim valueType As Type = column.DataType
+                If Not (valueType.IsPrimitive OrElse valueType Is GetType(String) OrElse
+                        valueType Is GetType(Decimal) OrElse valueType Is GetType(DateTime) OrElse
+                        valueType Is GetType(TimeSpan) OrElse valueType Is GetType(Guid)) Then
+                    directReads = False
+                    Exit For
+                End If
+            Next
             For Each row As DataRow In dt.Rows
-                Dim fields = row.ItemArray.Select(Function(field) field.ToString().Replace(",", " "))
+                ' Object/custom columns retain snapshot semantics if ToString mutates the row.
+                Dim snapshot As Object() = If(directReads, Nothing, row.ItemArray)
+                For columnIndex As Integer = 0 To fields.Length - 1
+                    Dim value As Object = If(directReads, row(columnIndex), snapshot(columnIndex))
+                    fields(columnIndex) = value.ToString().Replace(",", " ")
+                Next
                 writer.WriteLine(String.Join(",", fields))
             Next
         End Using

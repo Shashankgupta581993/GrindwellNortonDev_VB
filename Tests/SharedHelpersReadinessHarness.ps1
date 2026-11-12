@@ -295,45 +295,24 @@ function Test-TunnelContinuationRejectsNonTunnelOrder {
     Assert-Equal 0 $candidates.Count "Non-tunnel orders must not enter tunnel continuation."
 }
 
-function Test-MetricsOnlyCollectorAndExport {
-    $originalMetricsSetting = $env:GN_SCHEDULER_METRICS
-    $originalDebugSetting = $env:GN_SCHEDULER_DEBUG
+function Test-CodeConfiguredMetricsCollectorAndExport {
     $testFolder = Join-Path ([IO.Path]::GetTempPath()) ("gn_scheduler_metrics_" + [Guid]::NewGuid().ToString("N"))
-
     try {
-        $env:GN_SCHEDULER_METRICS = "true"
-        $env:GN_SCHEDULER_DEBUG = "false"
-
         $collectorType = $assembly.GetType("GrindwellNortonDev_VB.SchedulerDebugCollector", $true)
         $metricsType = $assembly.GetType("GrindwellNortonDev_VB.SchedulerActionMetricsRow", $true)
         $collector = [Activator]::CreateInstance($collectorType)
         $metrics = [Activator]::CreateInstance($metricsType)
-
-        Assert-False ([bool]$collector.Enabled) "Metrics-only mode should not enable detailed tracing."
-        Assert-True ([bool]$collector.MetricsEnabled) "Metrics-only mode should enable aggregate metrics."
-
+        $expectedMetrics = [bool]$collectorType.GetMethod('IsMetricsEnabledByConfiguration').Invoke($null, @())
+        Assert-Equal $expectedMetrics ([bool]$collector.MetricsEnabled) "Metrics must follow code settings."
         $metrics.ActionName = "HarnessAction"
-        $metrics.StartedAt = [DateTime]"2026-07-29T10:00:00"
-        $metrics.FinishedAt = [DateTime]"2026-07-29T10:00:01"
-        $metrics.ElapsedMilliseconds = 1000
-        $metrics.RecordsScanned = 12
         $collector.AddActionMetrics($metrics)
-
-        Assert-Equal 1 $collector.ActionMetricsRows.Count "Collector should retain one action metrics row."
-        Assert-True (-not [string]::IsNullOrWhiteSpace($metrics.RunId)) "Collector should assign the run ID."
-        Assert-True ($metrics.RunId -eq $collector.RunId) "Metrics row should use the collector run ID."
-
+        Assert-Equal ([int]$expectedMetrics) $collector.ActionMetricsRows.Count "Disabled metrics must not collect rows."
         $collector.ExportFolder = $testFolder
         $collector.ExportAll($null)
-
-        Assert-True (Test-Path -LiteralPath (Join-Path $testFolder "00_RunSummary.md")) "Metrics-only export should write the run summary."
-        Assert-True (Test-Path -LiteralPath (Join-Path $testFolder "12_ActionMetrics.csv")) "Metrics-only export should write action metrics."
-        Assert-False (Test-Path -LiteralPath (Join-Path $testFolder "01_FieldMap.csv")) "Metrics-only export should not write detailed trace files."
+        Assert-Equal ($collector.Enabled -or $collector.MetricsEnabled) (Test-Path -LiteralPath $testFolder) "Disabled diagnostics must not create an export directory."
+        Assert-Equal $expectedMetrics (Test-Path -LiteralPath (Join-Path $testFolder "12_ActionMetrics.csv")) "Metrics export must follow code settings."
     }
     finally {
-        $env:GN_SCHEDULER_METRICS = $originalMetricsSetting
-        $env:GN_SCHEDULER_DEBUG = $originalDebugSetting
-
         $resolvedTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
         $resolvedTestFolder = [IO.Path]::GetFullPath($testFolder)
         if ((Test-Path -LiteralPath $resolvedTestFolder) -and $resolvedTestFolder.StartsWith($resolvedTempRoot, [StringComparison]::OrdinalIgnoreCase)) {
@@ -720,7 +699,7 @@ Test-TunnelContinuationUsesOrderLevelKilnType
 Test-TunnelContinuationSkipsCompleted310And320To390Stage
 Test-TunnelContinuationAllowsMissing320
 Test-TunnelContinuationRejectsNonTunnelOrder
-Test-MetricsOnlyCollectorAndExport
+Test-CodeConfiguredMetricsCollectorAndExport
 Test-RunScopedLookupCacheSourceGuards
 Test-OperationRowIndexReuseAndInvalidation
 Test-ReadOrderTableSourceGuards

@@ -147,7 +147,7 @@
             ' operation has no predecessor; otherwise a valid release is required.
             If SharedHelpers.SafeInt(r("wip_prev_op_rec")) > 0 AndAlso
                (Not SharedHelpers.SafeBool(r("wip_prev_op_released")) OrElse wipReadyTime = DateTime.MinValue) Then
-                If debug IsNot Nothing AndAlso debug.Enabled Then
+                If debug IsNot Nothing AndAlso debug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then
                     debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
                         .OptimizerName = "pressingOptimizer_vf", .Stage = "Pressing",
                         .StepName = "Readiness", .RecordNo = SharedHelpers.SafeInt(r("OrdersID")),
@@ -224,7 +224,7 @@
         ' across due dates and could not enforce machine-level campaign continuity.
         Dim batched As List(Of Candidate) = sorted
 
-        If debug IsNot Nothing AndAlso debug.Enabled Then
+        If debug IsNot Nothing AndAlso debug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then
             Dim beforeCount As Integer = dt.AsEnumerable().Count(Function(r) SharedHelpers.SafeInt(r("Operation Number")) = 200)
             For i As Integer = 0 To batched.Count - 1
                 Dim c As Candidate = batched(i)

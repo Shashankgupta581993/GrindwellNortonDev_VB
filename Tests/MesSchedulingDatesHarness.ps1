@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][string]$AssemblyPath)
+﻿param([Parameter(Mandatory = $true)][string]$AssemblyPath)
 
 # Run with Windows PowerShell (the application and SDK target .NET Framework).
 Set-StrictMode -Version Latest
@@ -131,7 +131,7 @@ $algo = [Activator]::CreateInstance($algoType)
 $place = $algoType.GetMethod('PutOperationWithTrace', $flags)
 function Place([int]$Record, [int]$Resource, [datetime]$Start) {
     $place.Invoke($algo, [object[]]@($fakePreactor.Client, $fakeBoard.Client,
-        'Test', $Record, $Resource, $Start, 'Forward', $null, $null))
+        'Test', $Record, $Resource, $Start, 'Forward', $null, $null, $null))
 }
 
 $start = [datetime]'2026-11-02T08:00:00'
@@ -158,7 +158,7 @@ Assert (-not $writer.Dates.ContainsKey(23)) 'A stamp failure must propagate afte
 # Every compiled placement site must branch on the SDK Boolean before stamping.
 foreach ($name in @('AlgoSeq.vb', 'AlgoSeq3.vb', 'AlgoSeq4.vb', 'EventSeq.vb', 'PostFiringScheduler.vb')) {
     $source = Get-Content -Raw -LiteralPath (Join-Path $root $name)
-    $calls = [regex]::Matches($source, '(?m)^\s*Dim mesPlacementSucceeded As Boolean = \w+\.PutOperationOnResource\(').Count
+    $calls = [regex]::Matches($source, '(?m)^\s*(?:Dim )?mesPlacementSucceeded(?: As Boolean)? = \w+\.PutOperationOnResource\(').Count
     $stamps = [regex]::Matches($source, 'If mesPlacementSucceeded Then MesSchedulingDates\.StampSuccessfulPlacement').Count
     Assert ($calls -gt 0 -and $calls -eq $stamps) "Every placement in $name must conditionally stamp its operation."
     Assert (-not ($source -match '(?m)^\s*\w+\.PutOperationOnResource\(')) "No uninstrumented placement may remain in $name."

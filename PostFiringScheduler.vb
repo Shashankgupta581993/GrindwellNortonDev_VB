@@ -62,7 +62,7 @@ Public Class PostFiringScheduler
             SharedHelpers.BuildLatestReleaseBoundaries(routingDt)
         Dim queue As New List(Of QueueItem)(boundaries.Count)
         Dim debugEnabled As Boolean =
-            debug IsNot Nothing AndAlso debug.Enabled
+            debug IsNot Nothing AndAlso debug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace)
 
         If Metrics IsNot Nothing Then
             Metrics.BoundaryCount = boundaries.Count
@@ -182,7 +182,7 @@ Public Class PostFiringScheduler
 
         Dim scheduledCount As Integer = 0
         Dim debugEnabled As Boolean =
-            debug IsNot Nothing AndAlso debug.Enabled
+            debug IsNot Nothing AndAlso debug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace)
 
         For Each item As QueueItem In queue
 
@@ -270,7 +270,7 @@ Public Class PostFiringScheduler
                                                           opRec,
                                                           forceRefresh:=True) Then
                             Dim trace As ScheduleAttemptTraceRow = Nothing
-                            If debugEnabled Then
+                            If debug IsNot Nothing AndAlso debug.Collects(SchedulerDebugChannel.ScheduleAttemptTrace) Then
                                 trace = CreateAttempt(debug,
                                                       item,
                                                       opRec,
@@ -318,10 +318,12 @@ Public Class PostFiringScheduler
                                                    bestProcessEnd,
                                                    cache)
                     Else
-                        System.Diagnostics.Debug.WriteLine("PostFiring: no feasible resource. Order=" &
-                                        item.OrderNo &
-                                        ", OpRec=" & opRec &
-                                        ", OpNo=" & liveOpNo)
+                        If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                            System.Diagnostics.Debug.WriteLine("PostFiring: no feasible resource. Order=" &
+                                            item.OrderNo &
+                                            ", OpRec=" & opRec &
+                                            ", OpNo=" & liveOpNo)
+                        End If
                         If debugEnabled Then
                             TraceCandidate(debug,
                                            item,
@@ -341,10 +343,12 @@ Public Class PostFiringScheduler
                 If Metrics IsNot Nothing Then
                     Metrics.HandledExceptions += 1
                 End If
-                System.Diagnostics.Debug.WriteLine("PostFiring failed. Order=" &
-                                item.OrderNo &
-                                ", OpRec=" & item.NextOpRec &
-                                ", Error=" & ex.Message)
+                If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                    System.Diagnostics.Debug.WriteLine("PostFiring failed. Order=" &
+                                    item.OrderNo &
+                                    ", OpRec=" & item.NextOpRec &
+                                    ", Error=" & ex.Message)
+                End If
             End Try
 
         Next
@@ -465,7 +469,7 @@ Public Class PostFiringScheduler
                               reasonCode As String,
                               reasonDetail As String)
 
-        If debug Is Nothing OrElse Not debug.Enabled Then Return
+        If debug Is Nothing OrElse Not debug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then Return
         If boundary Is Nothing Then Return
 
         debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
@@ -499,7 +503,7 @@ Public Class PostFiringScheduler
                                reasonCode As String,
                                reasonDetail As String)
 
-        If debug Is Nothing OrElse Not debug.Enabled Then Return
+        If debug Is Nothing OrElse Not debug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then Return
         If item Is Nothing Then Return
 
         debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
@@ -523,7 +527,7 @@ Public Class PostFiringScheduler
 
     Private Function CreateAttempt(debug As SchedulerDebugCollector, item As QueueItem, opRec As Integer,
                                    opNo As Integer, resourceRec As Integer, startTime As DateTime) As ScheduleAttemptTraceRow
-        If debug Is Nothing OrElse Not debug.Enabled Then Return Nothing
+        If debug Is Nothing OrElse Not debug.Collects(SchedulerDebugChannel.ScheduleAttemptTrace) Then Return Nothing
         Dim row As New ScheduleAttemptTraceRow With {
             .Stage = "PostFiring400Plus", .OrderNo = item.OrderNo, .ParentRecordNo = item.ParentRecord,
             .RecordNo = opRec, .OperationNumber = opNo, .RequestedResource = resourceRec.ToString(),

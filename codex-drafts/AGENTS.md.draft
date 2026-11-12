@@ -1,0 +1,23 @@
+# Grindwell Norton Opcenter development
+
+This repository contains VB.NET scheduling custom actions for Siemens Opcenter APS. The project targets .NET Framework 4.8 and x64. Deployment notes describe APS 2210. Confirm the exact Opcenter build before relying on SDK behavior.
+
+## Scope and sources
+
+- Start from the requested action, expected scheduling result, and a known source revision. Inspect `git status --short` before editing and preserve existing work. For a fresh worktree, select a commit that includes the intended starting changes.
+- Trace the configured PESP action into its VB.NET entry point and shared helpers. For pressing setup, start with `AlgoSeq4.runPress`, `AlgoSeq4.RepairPressSetup`, `PressSetupBoard.vb`, and `PRESS_CAMPAIGNS.md`.
+- Use the matching Siemens configuration and SDK help to verify native API behavior. Use the effective model configuration, code, and a controlled replay to verify Grindwell-specific behavior. Record relevant help topics and flag assumptions that still need host verification.
+- Keep the diff focused on the agreed behavior. Preserve COM names, GUIDs, signatures and return values, PESP bindings, field mappings, and scheduling priorities unless the requirement calls for a change. Keep unrelated formatting, renames, dependency upgrades, and cleanup out of the patch.
+
+## Implementation and verification
+
+- Follow existing VB.NET conventions and preserve `Option Strict On`. Reuse scheduling helpers where their behavior fits. Prefer clear names, explicit units and date boundaries, and direct control flow. Preserve ordering, tie-breaks, and failure recovery unless the requirement changes them.
+- Build `Debug|x64` with Visual Studio MSBuild using `RegisterForComInterop=false` and fresh output, intermediate, and base intermediate paths. See `PRESS_CAMPAIGNS.md` for the command and `BUILD_SIGNING.md` for signing. Use the Opcenter references from the matching installation.
+- Run the relevant harnesses against the fresh DLL. For press setup, use `Tests/PressSetupHarness.ps1`. Add pressing candidate or campaign coverage when the change can affect feasibility, ranking, or allocation. Add a focused regression case when the existing harness would miss the intended behavior.
+- Verify native scheduling behavior on a disposable local model and SQL database copy. Record the loaded assembly hash and effective model settings. For runtime changes, compare the same restored inputs with matching diagnostic settings and measure elapsed time and available API-call counters. Report harness and Opcenter replay results separately.
+
+## Environment boundaries
+
+- Keep client database backups, customer extracts, credentials, signing material, and restricted Siemens documentation outside Git. Use local paths or approved fixture data in task prompts and evidence records.
+- Treat COM registration, client database access or writes, deployment, and changes to the configured model as explicit task actions. Check that the host is pointed at the disposable database before running a mutating scheduling action on a test model.
+- Report the behavior changed, affected files, validation actually performed, and any replay still pending. Use a separate commit or worktree for other requirements.

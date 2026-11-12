@@ -85,50 +85,44 @@ Public Class Helper
 
             Dim cycleNorm As String = ResolveCycleKey(cycleType)
 
-            If Not _opNoToCycleDays.ContainsKey(opNoNorm) Then Return False
-            Dim inner = _opNoToCycleDays(opNoNorm)
+        Dim inner As Dictionary(Of String, Decimal) = Nothing
+        If Not _opNoToCycleDays.TryGetValue(opNoNorm, inner) Then Return False
+        Return inner.TryGetValue(cycleNorm, days)
+    End Function
 
-            If Not inner.ContainsKey(cycleNorm) Then Return False
-            days = inner(cycleNorm)
-            Return True
-        End Function
+    '-----------------------------------------------------------
+    ' Fallback lookup: by Operation Name (useful while op numbers are blank)
+    ' Throws if missing when strict=True.
+    '-----------------------------------------------------------
+    Public Function GetDaysByName(ByVal cycleType As String, ByVal operationName As String) As Decimal
+        Dim days As Decimal
+        If TryGetDaysByName(cycleType, operationName, days) Then
+            Return days
+        End If
 
-        '-----------------------------------------------------------
-        ' Fallback lookup: by Operation Name (useful while op numbers are blank)
-        ' Throws if missing when strict=True.
-        '-----------------------------------------------------------
-        Public Function GetDaysByName(ByVal cycleType As String, ByVal operationName As String) As Decimal
-            Dim days As Decimal
-            If TryGetDaysByName(cycleType, operationName, days) Then
-                Return days
-            End If
-
-            If _strict Then
-                Throw New Exception("Process mapping missing for Operation_name='" & operationName &
+        If _strict Then
+            Throw New Exception("Process mapping missing for Operation_name='" & operationName &
                                 "', Cycle='" & cycleType & "'.")
-            End If
+        End If
 
-            Return 0D
-        End Function
+        Return 0D
+    End Function
 
-        Public Function TryGetDaysByName(ByVal cycleType As String,
+    Public Function TryGetDaysByName(ByVal cycleType As String,
                                      ByVal operationName As String,
                                      ByRef days As Decimal) As Boolean
 
-            days = 0D
+        days = 0D
 
-            Dim opNameNorm As String = NormalizeKey(operationName)
-            If String.IsNullOrWhiteSpace(opNameNorm) Then Return False
+        Dim opNameNorm As String = NormalizeKey(operationName)
+        If String.IsNullOrWhiteSpace(opNameNorm) Then Return False
 
-            Dim cycleNorm As String = ResolveCycleKey(cycleType)
+        Dim cycleNorm As String = ResolveCycleKey(cycleType)
 
-            If Not _opNameToCycleDays.ContainsKey(opNameNorm) Then Return False
-            Dim inner = _opNameToCycleDays(opNameNorm)
-
-            If Not inner.ContainsKey(cycleNorm) Then Return False
-            days = inner(cycleNorm)
-            Return True
-        End Function
+        Dim inner As Dictionary(Of String, Decimal) = Nothing
+        If Not _opNameToCycleDays.TryGetValue(opNameNorm, inner) Then Return False
+        Return inner.TryGetValue(cycleNorm, days)
+    End Function
 
     '===========================================================
     ' Loader

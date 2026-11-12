@@ -273,12 +273,15 @@ Public Class AlgoSeq4
                 SharedHelpers.OptimizerSettingsCatalog.BatchStartDelayMinutesRecordNumber)
 
         Dim configDir As String = preactor.ParseShellString("{PATH}")
-        Dim debugFolder As String = configDir & "\Debug\Firing_" & DateTime.Now.ToString("yyyyMMdd_HHmmss")
+        Dim debugFolder As String = Nothing
 
-        Dim enableDebugExport As Boolean = False
+        Dim enableDebugExport As Boolean = SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.BatchDebugCsv)
+        RepairScheduledFiringLoading(preactor, planningboard, operationRows,
+                                     1, LOADBICK, "BatchLoading")
         Dim firingObj As New firingOptimizer_vf()
 
         If enableDebugExport Then
+            debugFolder = configDir & "\Debug\Firing_" & DateTime.Now.ToString("yyyyMMdd_HHmmss")
             firingObj.ExportFiringCandidateDebug(routingDt, debugFolder)
         End If
 
@@ -313,7 +316,6 @@ Public Class AlgoSeq4
         End If
 
         ' 2. Optimization: Declare loop variables outside to reduce stack allocations
-        Dim Times As OperationTimes?
         Dim batchNo As Integer
         Dim batchStart As DateTime
         Dim kilnName As String
@@ -333,22 +335,9 @@ Public Class AlgoSeq4
                 PutOperationWithTrace(preactor, planningboard, "BatchFiring", firingOpRec, kilnResId, batchStart, "Forward")
             End If
 
-            ' Handle Previous Operation
-            Dim PREVIOUSOP As Integer = planningboard.GetPreviousOperation(firingOpRec, 1)
-            If PREVIOUSOP > 0 AndAlso
-                Not planningboard.IsOperationScheduled(PREVIOUSOP) AndAlso
-                Not SharedHelpers.IsCompletedOrActualizedOp(operationRows, PREVIOUSOP) Then
-                Try
-
-                    Times = planningboard.BackTestOpOnResource(PREVIOUSOP, LOADBICK, batchStart)
-                    If Times.HasValue Then
-                        PutOperationWithTrace(preactor, planningboard, "BatchLoading", PREVIOUSOP, LOADBICK, Times.Value.ProcessStart, "Backward")
-                    End If
-                Catch ex As Exception
-                    If TypeOf ex Is MesSchedulingException Then Throw
-                    ' Silently handled per original logic
-                End Try
-            End If
+            If Not planningboard.IsOperationScheduled(firingOpRec) Then Continue For
+            ScheduleLoadingBeforeFiring(preactor, planningboard, operationRows,
+                                        firingOpRec, LOADBICK, "BatchLoading")
 
             ' Handle Next Operations
             Dim batchEnd As DateTime = plan.BatchEndByBatchNo(batchNo)
@@ -422,6 +411,8 @@ Public Class AlgoSeq4
         If PREINSPC <= 0 Then Throw New Exception("Resource not found: PREINSPC")
         If KILNACK <= 0 Then Throw New Exception("Resource not found: KILNACK")
 
+        RepairScheduledFiringLoading(preactor, planningboard, operationRows,
+                                     3, LOADSW, "SWKLoading")
         Dim swkObj As New swkOptimizer_vf()
 
         Dim plan As swkOptimizer_vf.SwkBatchPlan =
@@ -436,11 +427,9 @@ Public Class AlgoSeq4
                                 SharedHelpers.OptimizerSettingsCatalog.SwkResourceName,
                             debug:=_schedulerDebug)
 
-        Dim configDir As String = preactor.ParseShellString("{PATH}")
-        Dim debugFolder As String = configDir & "\Debug\SWK_" & DateTime.Now.ToString("yyyyMMdd_HHmmss")
-        Dim enableDebugExport As Boolean = False
-
-        If enableDebugExport Then
+        If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.SwkDebugCsv) Then
+            Dim configDir As String = preactor.ParseShellString("{PATH}")
+            Dim debugFolder As String = configDir & "\Debug\SWK_" & DateTime.Now.ToString("yyyyMMdd_HHmmss")
             swkObj.ExportSwkPlanToCsv(plan, debugFolder)
         End If
 
@@ -469,26 +458,9 @@ Public Class AlgoSeq4
             '    Continue For
             'End If
 
-            ' --------------------------------------------------------
-            ' 2. Schedule previous loading operation on LOADSW
-            ' --------------------------------------------------------
-            Dim previousOp As Integer = planningboard.GetPreviousOperation(firingOpRec, 1)
-
-            If previousOp > 0 AndAlso
-               Not planningboard.IsOperationScheduled(previousOp) AndAlso
-               Not SharedHelpers.IsCompletedOrActualizedOp(operationRows, previousOp) Then
-                Dim loadTimes As OperationTimes? =
-                planningboard.BackTestOpOnResource(previousOp, LOADSW, batchStart)
-
-                If loadTimes.HasValue Then
-                    PutOperationWithTrace(preactor, planningboard, "SWKLoading", previousOp, LOADSW, loadTimes.Value.ProcessStart, "Backward")
-                Else
-                    System.Diagnostics.Debug.WriteLine("SWK: Cannot back-schedule LOADSW for previous op " &
-                                                   previousOp &
-                                                   ", firing op " &
-                                                   firingOpRec)
-                End If
-            End If
+            If Not planningboard.IsOperationScheduled(firingOpRec) Then Continue For
+            ScheduleLoadingBeforeFiring(preactor, planningboard, operationRows,
+                                        firingOpRec, LOADSW, "SWKLoading")
 
             ' --------------------------------------------------------
             ' 3. Schedule downstream operations, preserving sequence stage
@@ -574,6 +546,8 @@ Public Class AlgoSeq4
                                                           planningboard,
                                                           "TCBK")
 
+        RepairScheduledFiringLoading(preactor, planningboard, operationRows,
+                                     2, LOADPTK, "TunnelLoading")
         Dim tunnelObj As New tunnelOptimizer_vf()
 
         Dim plan = tunnelObj.BuildTunnelPlan(
@@ -594,8 +568,6 @@ Public Class AlgoSeq4
         Dim cartNo As Integer
         Dim batchstart As DateTime
         Dim batchStartOffset As DateTime
-        Dim PREVIOUSOP As Integer
-        Dim opTimes As OperationTimes? ' Used to test .HasValue safely
 
         For Each firingOpRec As Integer In plan.CartNoByFiringOpRec.Keys
 
@@ -609,16 +581,9 @@ Public Class AlgoSeq4
             preactor.WriteField(ordersTable, BATCHTIME, firingOpRec, batchTimeValue)
             PutOperationWithTrace(preactor, planningboard, "TunnelFiring", firingOpRec, TCBK, batchStartOffset, "Forward")
 
-            ' Handle Previous Operation
-            PREVIOUSOP = planningboard.GetPreviousOperation(firingOpRec, 1)
-            If PREVIOUSOP > 0 AndAlso
-               Not planningboard.IsOperationScheduled(PREVIOUSOP) AndAlso
-               Not SharedHelpers.IsCompletedOrActualizedOp(operationRows, PREVIOUSOP) Then
-                opTimes = planningboard.BackTestOpOnResource(PREVIOUSOP, LOADPTK, batchStartOffset)
-                If opTimes.HasValue Then
-                    PutOperationWithTrace(preactor, planningboard, "TunnelLoading", PREVIOUSOP, LOADPTK, opTimes.Value.ProcessStart, "Backward")
-                End If
-            End If
+            If Not planningboard.IsOperationScheduled(firingOpRec) Then Continue For
+            ScheduleLoadingBeforeFiring(preactor, planningboard, operationRows,
+                                        firingOpRec, LOADPTK, "TunnelLoading")
 
             ' Handle Next Operations
             ScheduleAdjacentPostFiringStages(preactor,
@@ -727,7 +692,7 @@ Public Class AlgoSeq4
             Dim swkStageNames As String() =
                 New String() {"FiringFollowOn", "FiringFollowOn"}
 
-            If boundaries.Count = 0 AndAlso _schedulerDebug IsNot Nothing AndAlso _schedulerDebug.Enabled Then
+            If boundaries.Count = 0 AndAlso _schedulerDebug IsNot Nothing AndAlso _schedulerDebug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then
                 _schedulerDebug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
                 .OptimizerName = "FiringFollowOn",
                 .Stage = "FiringFollowOn",
@@ -1001,7 +966,9 @@ Public Class AlgoSeq4
                         actionMetrics.HandledExceptions += 1
                     End If
 
-                    Debug.WriteLine("Failed scheduling op " & i & ": " & ex.Message)
+                    If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                        Debug.WriteLine("Failed scheduling op " & i & ": " & ex.Message)
+                    End If
                 End Try
             Next
 
@@ -1081,11 +1048,16 @@ Public Class AlgoSeq4
     End Function
 
     Public Function showMeta(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        If Not SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then Return 0
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
 
-        Debug.WriteLine(preactor.GetFieldNumber(143, "Numeric Value"))
-        Debug.WriteLine(preactor.ReadFieldDouble(143, 11, 1))
+        If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+            Debug.WriteLine(preactor.GetFieldNumber(143, "Numeric Value"))
+        End If
+        If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+            Debug.WriteLine(preactor.ReadFieldDouble(143, 11, 1))
+        End If
 
         Return 0
     End Function
@@ -1134,10 +1106,12 @@ Public Class AlgoSeq4
                 If opNo >= 200 Then Exit While
 
                 If SharedHelpers.IsCompletedOrActualizedOp(operationRows, opRec) Then
-                    Debug.WriteLine("MixingSkipCompletedActualized | OpRec=" &
-                                    opRec.ToString(CultureInfo.InvariantCulture) &
-                                    " | OpNo=" &
-                                    opNo.ToString(CultureInfo.InvariantCulture))
+                    If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                        Debug.WriteLine("MixingSkipCompletedActualized | OpRec=" &
+                                        opRec.ToString(CultureInfo.InvariantCulture) &
+                                        " | OpNo=" &
+                                        opNo.ToString(CultureInfo.InvariantCulture))
+                    End If
                     opRec = planningboard.GetNextOperation(opRec, 1)
                     Continue While
                 End If
@@ -1209,7 +1183,9 @@ Public Class AlgoSeq4
         BeginSchedulerDebug(preactor)
         Try
             Dim board As IPlanningBoard = preactor.PlanningBoard
-            Dim routing As DataTable = readOrderTable(preactor)
+            Dim setup = PressSetupBoard.Load(preactor)
+            Dim routing As DataTable = If(setup Is Nothing, readOrderTable(preactor),
+                SharedHelpers.ReadPressOrderTable(preactor, setup.RingFieldName, setup.BorePinFieldName))
             Dim rows = SharedHelpers.BuildOperationRowIndex(routing)
             Dim optimizer As New pressingOptimizer_vf()
             Dim ranked = optimizer.BuildRankedCandidates(routing, board.TerminatorTime,
@@ -1218,24 +1194,24 @@ Public Class AlgoSeq4
                 _schedulerDebug)
             Dim orders As New List(Of PressCampaignOrder)
             Dim history As New List(Of PressCampaignSlot)
+            Dim allocations As New List(Of PressCampaignSlot)
 
             ' Read the live allocation, not Required Resource: an order selected
             ' from a group still has one concrete machine in its scheduled history.
             ' Both historical and future allocations are preserved by the engine.
             For Each row As DataRow In routing.Rows
-                If SharedHelpers.SafeInt(row("Operation Number")) <> 200 OrElse
-                   Not SharedHelpers.SafeBool(row("is_scheduled")) Then Continue For
+                Dim operationNumber = SharedHelpers.SafeInt(row("Operation Number"))
+                If Not SharedHelpers.SafeBool(row("is_scheduled")) OrElse
+                   (operationNumber <> 200 AndAlso setup Is Nothing) Then Continue For
                 Dim record = SharedHelpers.SafeInt(row("OrdersID"))
                 Dim times = board.GetOperationTimes(record)
                 If Not times.HasValue Then
-                    Throw New InvalidOperationException("Cannot reconstruct pressing tooling history for scheduled record " & record.ToString())
+                    Throw New InvalidOperationException("Cannot reconstruct resource history for scheduled record " & record.ToString())
                 End If
-                history.Add(New PressCampaignSlot With {
-                    .RecordNo = record, .Resource = times.Value.Resource,
-                    .Start = times.Value.OperationTimes.ChangeStart,
-                    .Finish = times.Value.OperationTimes.ProcessEnd,
-                    .Ring = SharedHelpers.SafeStr(row("Wheel Dia")),
-                    .Pin = SharedHelpers.SafeStr(row("Wheel thickness"))})
+                Dim slot = PressSetupBoard.ReadSlot(record, operationNumber, times.Value,
+                    SharedHelpers.SafeStr(row("Wheel Dia")), SharedHelpers.SafeStr(row("Wheel thickness")))
+                If slot.IsPress Then history.Add(slot)
+                If setup IsNot Nothing Then allocations.Add(slot)
             Next
 
             For rank As Integer = 0 To ranked.Count - 1
@@ -1269,18 +1245,17 @@ Public Class AlgoSeq4
                 orders.Add(order)
             Next
 
-            ' Integration seam for the later changeover work:
-            ' QueryPressCampaign MUST include any future setup duration before
-            ' feasibility is decided. CommitPressCampaign must place the same
-            ' interval exactly once; do not append setup again after querying it.
-            ' No reporter means no campaign trace construction/export in the hot
-            ' search path. Disabled diagnostics must not format strings per query.
+            Dim queryAfterTrial As Func(Of PressCampaignOrder, Integer, DateTime, PressCampaignSlot, PressCampaignSlot) = Nothing
+            If setup IsNot Nothing Then
+                setup.LoadTimeline(allocations, orders.SelectMany(Function(order) order.Resources))
+                queryAfterTrial = Function(order, resource, earliest, trial) setup.Query(order, resource, earliest, trial)
+            End If
             Dim campaignReporter As Action(Of PressCampaignDecision) = Nothing
-            If _schedulerDebug IsNot Nothing AndAlso _schedulerDebug.Enabled Then campaignReporter = AddressOf TracePressCampaign
+            If _schedulerDebug IsNot Nothing AndAlso _schedulerDebug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then campaignReporter = AddressOf TracePressCampaign
             Dim scheduler As New PressCampaignScheduler(board.TerminatorTime, history,
-                Function(order, resource, earliest) QueryPressCampaign(board, order, resource, earliest),
-                Function(slot) CommitPressCampaign(preactor, board, slot),
-                campaignReporter)
+                Function(order, resource, earliest) QueryPressCampaign(board, order, resource, earliest, setup),
+                Function(slot) CommitPressCampaign(preactor, board, slot, setup),
+                campaignReporter, queryAfterTrial)
             scheduler.Run(orders)
             Return 0
         Finally
@@ -1290,7 +1265,10 @@ Public Class AlgoSeq4
     End Function
 
     Private Function QueryPressCampaign(board As IPlanningBoard, order As PressCampaignOrder,
-                                        resource As Integer, earliest As DateTime) As PressCampaignSlot
+                                        resource As Integer, earliest As DateTime,
+                                        setup As PressSetupBoard) As PressCampaignSlot
+        ' A failed Setup Time write or restore must stop the action.
+        If setup IsNot Nothing Then Return setup.Query(order, resource, earliest)
         Try
             ' The run snapshot excludes scheduled operations; commit performs the
             ' live recheck. Avoid a second COM call for every feasibility query.
@@ -1307,17 +1285,13 @@ Public Class AlgoSeq4
     End Function
 
     Private Function CommitPressCampaign(preactor As IPreactor, board As IPlanningBoard,
-                                         slot As PressCampaignSlot) As PressCampaignSlot
-        ' slot.PreviousRing / PreviousPin, Ring / Pin and Transition describe the
-        ' decided tooling change before placement. No workbook setup duration is
-        ' charged here. When that feature is added, QueryPressCampaign must first
-        ' reserve the same setup time, otherwise this commit would no longer match
-        ' the capacity and urgency checks used to select the order.
-        ' Do not trust a successful API return alone. Re-read actual allocation.
-        ' If the API throws AFTER placing, still return its actual state so the
-        ' engine does not forget a ring switch that really occurred on the board.
+                                         slot As PressCampaignSlot, setup As PressSetupBoard) As PressCampaignSlot
         If board.IsOperationScheduled(slot.RecordNo) Then
             Throw New InvalidOperationException("Pressing record was scheduled externally during this run: " & slot.RecordNo.ToString())
+        End If
+        If setup IsNot Nothing Then
+            Return setup.Commit(slot, Sub(verify) PutOperationWithTrace(preactor, board, "Pressing", slot.RecordNo,
+                slot.Resource, slot.Start, "Forward", verifyPlacement:=verify))
         End If
         Try
             PutOperationWithTrace(preactor, board, "Pressing", slot.RecordNo,
@@ -1337,7 +1311,7 @@ Public Class AlgoSeq4
     End Function
 
     Private Sub TracePressCampaign(decision As PressCampaignDecision)
-        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Enabled Then Return
+        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then Return
         Dim detail = decision.Detail & ";Resource=" & decision.Resource.ToString(CultureInfo.InvariantCulture) &
             ";PreviousRing=" & decision.PreviousRing & ";PreviousPin=" & decision.PreviousPin &
             ";NextRing=" & decision.NextRing & ";NextPin=" & decision.NextPin &
@@ -1883,11 +1857,13 @@ Public Class AlgoSeq4
                 If actionMetrics IsNot Nothing Then
                     actionMetrics.HandledExceptions += 1
                 End If
-                System.Diagnostics.Debug.WriteLine("Post firing stage scheduling failed. FiringOpRec=" &
-                                                   firingOpRec.ToString(CultureInfo.InvariantCulture) &
-                                                   ", OpRec=" &
-                                                   nextOp.ToString(CultureInfo.InvariantCulture) &
-                                                   ", Error=" & ex.Message)
+                If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                    System.Diagnostics.Debug.WriteLine("Post firing stage scheduling failed. FiringOpRec=" &
+                                                       firingOpRec.ToString(CultureInfo.InvariantCulture) &
+                                                       ", OpRec=" &
+                                                       nextOp.ToString(CultureInfo.InvariantCulture) &
+                                                       ", Error=" & ex.Message)
+                End If
                 Exit While
             End Try
 
@@ -2065,7 +2041,7 @@ Public Class AlgoSeq4
                                             reasonCode As String,
                                             reasonDetail As String)
 
-        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Enabled Then Return
+        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then Return
         If boundary Is Nothing Then Return
 
         _schedulerDebug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
@@ -2093,7 +2069,7 @@ Public Class AlgoSeq4
 
     Private Sub TraceTunnelContinuationSourceRows(routingDt As DataTable)
 
-        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Enabled Then Return
+        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then Return
         If routingDt Is Nothing Then Return
 
         Dim tunnelOrderLookup As Dictionary(Of String, Boolean) =
@@ -2141,7 +2117,7 @@ Public Class AlgoSeq4
                                                  nextOpRec As Integer,
                                                  requestedStart As DateTime)
 
-        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Enabled Then Return
+        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then Return
         If candidate Is Nothing Then Return
 
         Dim detail As String = reasonDetail &
@@ -2179,7 +2155,7 @@ Public Class AlgoSeq4
                                                  resourceRec As Integer,
                                                  requestedStart As DateTime)
 
-        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Enabled Then Return
+        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then Return
 
         Dim snapshot As OperationSnapshot = _schedulerDebug.FindOperationSnapshot(opRec)
         Dim nextOpRec As Integer = 0
@@ -2227,7 +2203,7 @@ Public Class AlgoSeq4
                                              requestedStart As DateTime,
                                              Optional lookupCache As SchedulerRunLookupCache = Nothing)
 
-        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Enabled Then Return
+        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then Return
 
         Dim snapshot As OperationSnapshot = _schedulerDebug.FindOperationSnapshot(opRec)
         Dim nextOpRec As Integer = 0
@@ -2280,7 +2256,7 @@ Public Class AlgoSeq4
                                            resourceRec As Integer,
                                            requestedStart As DateTime)
 
-        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Enabled Then Return
+        If _schedulerDebug Is Nothing OrElse Not _schedulerDebug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then Return
         If row Is Nothing Then Return
 
         Dim detail As String = reasonDetail &
@@ -3019,20 +2995,25 @@ Public Class AlgoSeq4
     End Function
 
     Private Sub BeginSchedulerDebug(preactor As IPreactor)
+        _schedulerDebug = Nothing
+        If Not SchedulerDebugCollector.IsEnabledByConfiguration() AndAlso
+           Not SchedulerDebugCollector.IsMetricsEnabledByConfiguration() Then Return
         Try
             _schedulerDebug = New SchedulerDebugCollector()
             If Not _schedulerDebug.Enabled AndAlso Not _schedulerDebug.MetricsEnabled Then
                 _schedulerDebug = Nothing
                 Return
             End If
-            If _schedulerDebug.Enabled Then
+            If _schedulerDebug.NeedsSnapshot OrElse _schedulerDebug.Collects(SchedulerDebugChannel.FieldMap) Then
                 Dim snapshot As List(Of OperationSnapshot) =
                     SchedulerStageDiagnostics.BuildOrderOperationSnapshot(preactor, _schedulerDebug)
                 SchedulerStageDiagnostics.DiagnoseWip(snapshot, _schedulerDebug)
                 SchedulerStageDiagnostics.DiagnoseAll(snapshot, _schedulerDebug)
             End If
         Catch ex As Exception
-            Debug.WriteLine("Scheduler diagnostics initialization failed: " & ex.Message)
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine("Scheduler diagnostics initialization failed: " & ex.Message)
+            End If
             _schedulerDebug = Nothing
         End Try
     End Sub
@@ -3040,7 +3021,7 @@ Public Class AlgoSeq4
     Private Sub FinishSchedulerDebug(preactor As IPreactor)
         If _schedulerDebug Is Nothing Then Return
         Try
-            If _schedulerDebug.Enabled Then
+            If _schedulerDebug.NeedsSnapshot OrElse _schedulerDebug.Collects(SchedulerDebugChannel.FieldMap) Then
                 Dim snapshot As List(Of OperationSnapshot) =
                     SchedulerStageDiagnostics.BuildOrderOperationSnapshot(preactor, _schedulerDebug)
                 SchedulerStageDiagnostics.DiagnoseWip(snapshot, _schedulerDebug)
@@ -3048,7 +3029,9 @@ Public Class AlgoSeq4
             End If
             _schedulerDebug.ExportAll(preactor)
         Catch ex As Exception
-            Debug.WriteLine("Scheduler diagnostics export failed: " & ex.Message)
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine("Scheduler diagnostics export failed: " & ex.Message)
+            End If
         End Try
     End Sub
 
@@ -3076,6 +3059,75 @@ Public Class AlgoSeq4
         row.ElapsedMilliseconds = actionWatch.ElapsedMilliseconds
     End Sub
 
+    ' Scheduled firing is excluded by the optimizers, so repair its pending
+    ' loading separately. Do not use wip_status: firing itself makes loading
+    ' fail the normal "future operation scheduled" candidate gate.
+    Private Sub RepairScheduledFiringLoading(preactor As IPreactor,
+                                             planningboard As IPlanningBoard,
+                                             operationRows As IDictionary(Of Integer, DataRow),
+                                             kilnType As Integer,
+                                             loadingResource As Integer,
+                                             stage As String)
+        For Each row As DataRow In operationRows.Values
+            If SharedHelpers.SafeInt(row("Operation Number")) <> 300 OrElse
+               SharedHelpers.SafeInt(row("Kiln Type")) <> kilnType Then Continue For
+
+            Dim firingOpRec As Integer = SharedHelpers.SafeInt(row("OrdersID"))
+            If planningboard.IsOperationScheduled(firingOpRec) Then
+                ScheduleLoadingBeforeFiring(preactor, planningboard, operationRows,
+                                            firingOpRec, loadingResource, stage)
+            End If
+        Next
+    End Sub
+
+    ' Loading is deliberately forced to end at firing's actual setup start.
+    ' Shopfloor adjustments are allowed, including dates before the terminator,
+    ' calendar conflicts and predecessor overlaps. Never move released loading.
+    Private Sub ScheduleLoadingBeforeFiring(preactor As IPreactor,
+                                            planningboard As IPlanningBoard,
+                                            operationRows As IDictionary(Of Integer, DataRow),
+                                            firingOpRec As Integer,
+                                            loadingResource As Integer,
+                                            stage As String)
+        If Not planningboard.IsOperationScheduled(firingOpRec) Then Return
+
+        Dim loadingOpRec As Integer = planningboard.GetPreviousOperation(firingOpRec, 1)
+        If loadingOpRec <= 0 Then Return
+        Dim loadingRow As DataRow = Nothing
+        If Not operationRows.TryGetValue(loadingOpRec, loadingRow) Then
+            Throw New InvalidOperationException("Loading routing row missing for operation record " & loadingOpRec.ToString())
+        End If
+        Dim opNo As Integer = SharedHelpers.SafeInt(loadingRow("Operation Number"))
+        If opNo <> 290 AndAlso opNo <> 291 Then Return
+        If planningboard.IsOperationScheduled(loadingOpRec) OrElse
+           SharedHelpers.IsCompletedOrActualizedOp(operationRows, loadingOpRec) Then Return
+        If loadingResource <= 0 Then
+            Throw New InvalidOperationException("Loading resource not found for " & stage)
+        End If
+
+        Dim firingTimes As OperationResourceTimes? = planningboard.GetOperationTimes(firingOpRec)
+        If Not firingTimes.HasValue OrElse
+           firingTimes.Value.OperationTimes.ChangeStart = DateTime.MinValue Then
+            Throw New InvalidOperationException("Scheduled firing has no valid start time: " & firingOpRec.ToString())
+        End If
+        Dim finish As DateTime = firingTimes.Value.OperationTimes.ChangeStart
+        Dim processDuration As TimeSpan = planningboard.GetProcessTime(loadingOpRec, loadingResource, finish)
+        If processDuration < TimeSpan.Zero Then
+            Throw New InvalidOperationException("Invalid loading process duration for operation " & loadingOpRec.ToString())
+        End If
+        Dim processStart As DateTime = finish.Subtract(processDuration)
+        Dim setupDuration As TimeSpan = planningboard.GetSetupTime(loadingOpRec, loadingResource, processStart)
+        If setupDuration < TimeSpan.Zero Then
+            Throw New InvalidOperationException("Invalid loading setup duration for operation " & loadingOpRec.ToString())
+        End If
+        Dim loadingTimes As New OperationTimes(processStart.Subtract(setupDuration), processStart, finish)
+
+        If planningboard.IsOperationScheduled(loadingOpRec) Then Return
+        PutOperationWithTrace(preactor, planningboard, stage, loadingOpRec,
+                              loadingResource, loadingTimes.ChangeStart, "Backward",
+                              explicitTimes:=loadingTimes)
+    End Sub
+
     Private Sub PutOperationWithTrace(preactor As IPreactor,
                                       planningboard As IPlanningBoard,
                                       stage As String,
@@ -3084,9 +3136,11 @@ Public Class AlgoSeq4
                                        startTime As DateTime,
                                        direction As String,
                                        Optional actionMetrics As SchedulerActionMetricsRow = Nothing,
-                                       Optional lookupCache As SchedulerRunLookupCache = Nothing)
+                                       Optional lookupCache As SchedulerRunLookupCache = Nothing,
+                                      Optional explicitTimes As OperationTimes? = Nothing,
+                                      Optional verifyPlacement As Action = Nothing)
         Dim trace As ScheduleAttemptTraceRow = Nothing
-        If _schedulerDebug IsNot Nothing AndAlso _schedulerDebug.Enabled Then
+        If _schedulerDebug IsNot Nothing AndAlso _schedulerDebug.Collects(SchedulerDebugChannel.ScheduleAttemptTrace) Then
             Try
                 Dim snapshot As OperationSnapshot =
                     _schedulerDebug.FindOperationSnapshot(opRec)
@@ -3103,7 +3157,9 @@ Public Class AlgoSeq4
                 }
                 _schedulerDebug.TraceScheduleAttempt(trace)
             Catch ex As Exception
-                Debug.WriteLine("Schedule-attempt trace initialization failed: " & ex.Message)
+                If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                    Debug.WriteLine("Schedule-attempt trace initialization failed: " & ex.Message)
+                End If
                 trace = Nothing
             End Try
         End If
@@ -3112,8 +3168,28 @@ Public Class AlgoSeq4
             If actionMetrics IsNot Nothing Then
                 actionMetrics.PlacementAttempts += 1
             End If
-            Dim mesPlacementSucceeded As Boolean = planningboard.PutOperationOnResource(opRec, resourceRec, startTime)
-            If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, opRec)
+            Dim mesPlacementSucceeded As Boolean
+            If explicitTimes.HasValue Then
+                mesPlacementSucceeded = planningboard.QuickPutOperationOnResource(opRec, resourceRec, explicitTimes.Value)
+                If Not mesPlacementSucceeded Then
+                    Throw New InvalidOperationException("Forced loading placement rejected for operation " & opRec.ToString())
+                End If
+                Dim actual As OperationResourceTimes? = planningboard.GetOperationTimes(opRec)
+                ' COM dates use OLE Automation precision; allow only millisecond rounding.
+                If Not planningboard.IsOperationScheduled(opRec) OrElse Not actual.HasValue OrElse
+                   actual.Value.Resource <> resourceRec OrElse
+                   Math.Abs((actual.Value.OperationTimes.ChangeStart - explicitTimes.Value.ChangeStart).TotalMilliseconds) > 1 OrElse
+                   Math.Abs((actual.Value.OperationTimes.ProcessStart - explicitTimes.Value.ProcessStart).TotalMilliseconds) > 1 OrElse
+                   Math.Abs((actual.Value.OperationTimes.ProcessEnd - explicitTimes.Value.ProcessEnd).TotalMilliseconds) > 1 Then
+                    Throw New InvalidOperationException("Forced loading timings were not retained for operation " & opRec.ToString())
+                End If
+            Else
+                mesPlacementSucceeded = planningboard.PutOperationOnResource(opRec, resourceRec, startTime)
+            End If
+            If mesPlacementSucceeded Then
+                If verifyPlacement IsNot Nothing Then verifyPlacement()
+                MesSchedulingDates.StampSuccessfulPlacement(preactor, opRec)
+            End If
             If lookupCache IsNot Nothing Then
                 lookupCache.MarkOperationPlaced(opRec)
             End If
@@ -3157,9 +3233,25 @@ Public Class AlgoSeq4
             End If
             trace.ActualResource = resourceRec.ToString(CultureInfo.InvariantCulture)
         Catch ex As Exception
-            Debug.WriteLine("Schedule-attempt trace completion failed: " & ex.Message)
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine("Schedule-attempt trace completion failed: " & ex.Message)
+            End If
         End Try
     End Sub
 
-
+    Public Function RepairPressSetup(ByRef preactorComObject As PreactorObj, ByRef pespComObject As Object) As Integer
+        Try
+            Dim preactor = PreactorFactory.CreatePreactorObject(preactorComObject)
+            Dim setup = PressSetupBoard.Load(preactor)
+            If setup Is Nothing Then Throw New InvalidOperationException("Configure PressSetupCsvPath before running press setup repair.")
+            Dim changed = setup.Repair(SharedHelpers.ReadPressOrderTable(preactor, setup.RingFieldName, setup.BorePinFieldName))
+            Dim result = If(changed = 0, "0 Setup Time fields changed. Any eligible allocated operations already had the calculated values.",
+                            $"Updated Setup Time for {changed} operation(s).")
+            MessageBox.Show(result, "Repair Press Setup", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return 0
+        Catch ex As Exception
+            MessageBox.Show(ex.Message, "Repair Press Setup", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return -1
+        End Try
+    End Function
 End Class

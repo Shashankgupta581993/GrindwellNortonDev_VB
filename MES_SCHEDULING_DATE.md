@@ -17,7 +17,7 @@ These configuration and SQL view sources are **not in this repository**. Complet
 the following in the GN configuration before enabling the updated rules in UAT:
 
 1. Add or map an **operation-level**, persisted Orders **DateTime** field named
-   `MES Plan Effective Date`. It must allow an empty value for utouched rows and
+   ` `. It must allow an empty value for utouched rows and
    be included in then normal dataset save/load mapping. Do not configure it as an
    inherited order-wide value or an input to scheduling calculations. Existing
    imports must preserve this APS-owned field unless deliberately resetting it.

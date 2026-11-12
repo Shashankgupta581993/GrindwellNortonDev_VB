@@ -12,6 +12,8 @@ Imports Preactor.Interop.PreactorObject
 <Microsoft.VisualBasic.ComClass("CB33CBBB-86A2-4E5B-AB7F-CED625FC91F0", "74CB5EE0-B64D-47E8-BA3C-AF77977B5DA2")>
 Public Class SchedulerDiagnosticsTool
     Public Function ExportSchedulingDiagnostics(ByRef preactorComObject As PreactorObj) As Integer
+        If Not SchedulerDebugCollector.IsEnabledByConfiguration() AndAlso
+           Not SchedulerDebugCollector.IsMetricsEnabledByConfiguration() Then Return 0
         Dim preactor As IPreactor = PreactorFactory.CreatePreactorObject(preactorComObject)
         Dim debug As New SchedulerDebugCollector()
         Try
@@ -20,10 +22,12 @@ Public Class SchedulerDiagnosticsTool
             SchedulerStageDiagnostics.DiagnoseWip(snapshot, debug)
             SchedulerStageDiagnostics.DiagnoseAll(snapshot, debug)
             debug.ExportAll(preactor)
-            MessageBox.Show("Scheduling diagnostics exported to:" & Environment.NewLine & debug.ExportFolder,
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DiagnosticPopups) Then
+                MessageBox.Show("Scheduling diagnostics exported to:" & Environment.NewLine & debug.ExportFolder,
                             "GN Opcenter Scheduling Diagnostics",
                             MessageBoxButtons.OK,
                             MessageBoxIcon.Information)
+            End If
             Return 0
         Catch ex As Exception
             MessageBox.Show("Scheduling diagnostics export failed:" & Environment.NewLine & ex.Message,

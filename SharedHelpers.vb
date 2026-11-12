@@ -8,6 +8,7 @@ Imports System.Text
 Imports Preactor
 
 Public Module SharedHelpers
+    Private ReadOnly NumericDateSeparators As Char() = {" "c, "T"c}
 
     Private ReadOnly MinimumOperationalDate As New DateTime(1900, 1, 1)
     Private Const OperationRowIndexPropertyName As String =
@@ -420,13 +421,6 @@ Public Module SharedHelpers
         Return 0
     End Function
 
-    'Public Function SafeDate(o As Object) As DateTime
-    '    If o Is Nothing Then Return DateTime.MinValue
-    '    If TypeOf o Is DateTime Then Return CType(o, DateTime)
-    '    Dim d As DateTime
-    '    If DateTime.TryParse(o.ToString(), CultureInfo.InvariantCulture, DateTimeStyles.None, d) Then Return d
-    '    Return DateTime.MinValue
-    'End Function
     Public Function SafeDate(o As Object) As DateTime
         Dim parsed As DateTime
         If TryParseDateValue(o, parsed) Then Return parsed
@@ -485,7 +479,7 @@ Public Module SharedHelpers
 
     Private Function LooksLikeNumericDate(value As String) As Boolean
         Dim datePart As String = value
-        Dim separatorIndex As Integer = value.IndexOfAny(New Char() {" "c, "T"c})
+        Dim separatorIndex As Integer = value.IndexOfAny(NumericDateSeparators)
         If separatorIndex >= 0 Then datePart = value.Substring(0, separatorIndex)
 
         If datePart.Length = 0 Then Return False
@@ -665,25 +659,6 @@ Public Module SharedHelpers
         Throw New FormatException("Invalid date: " & s)
     End Function
 
-    'Public Function ParseDueAsEndOfDay(o As Object) As DateTime
-    '    Dim s As String = SafeStr(o).Trim()
-    '    If s = "" Then Return DateTime.MinValue
-
-    '    Dim d As DateTime
-    '    If DateTime.TryParseExact(s,
-    '                              "dd-MM-yyyy",
-    '                              CultureInfo.InvariantCulture,
-    '                              DateTimeStyles.None,
-    '                              d) Then
-    '        Return d.Date.AddDays(1).AddTicks(-1) ' end of day
-    '    End If
-
-    '    If DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, d) Then
-    '        Return d.Date.AddDays(1).AddTicks(-1)
-    '    End If
-
-    '    Return DateTime.MinValue
-    'End Function
     Public Function ParseDueAsEndOfDay(o As Object) As DateTime
         Dim parsed As DateTime = SafeDate(o)
         If parsed = DateTime.MinValue Then Return DateTime.MinValue
@@ -800,8 +775,14 @@ Public Module SharedHelpers
         Return ReadOrderTableCore(preactor, lookupCache)
     End Function
 
+    Friend Function ReadPressOrderTable(preactor As IPreactor, ringField As String, pinField As String) As DataTable
+        Return ReadOrderTableCore(preactor, Nothing, ringField, pinField)
+    End Function
+
     Private Function ReadOrderTableCore(preactor As IPreactor,
-                                        lookupCache As SchedulerRunLookupCache) As DataTable
+                                        lookupCache As SchedulerRunLookupCache,
+                                        Optional pressRingField As String = "String Attribute 5",
+                                        Optional pressPinField As String = "String Attribute 4") As DataTable
         Dim planningboard As IPlanningBoard = preactor.PlanningBoard
         Dim dt As DataTable = BuildRoutingSchema()
         Dim cache As SchedulerRunLookupCache = lookupCache
@@ -867,8 +848,8 @@ Public Module SharedHelpers
                     cache.GetFieldNumber(preactor, ordersTable, "String Attribute 5")
                 Dim wheelThck As Integer =
                     cache.GetFieldNumber(preactor, ordersTable, "String Attribute 4")
-                Dim wheelPin As Integer =
-                    cache.GetFieldNumber(preactor, ordersTable, "String Attribute 3")
+                Dim pressRing As Integer = cache.GetFieldNumber(preactor, ordersTable, pressRingField)
+                Dim pressPin As Integer = cache.GetFieldNumber(preactor, ordersTable, pressPinField)
                 Dim schStart As Integer =
                     cache.GetFieldNumber(preactor, ordersTable, "Start Time")
                 Dim schEnd As Integer =
@@ -953,8 +934,8 @@ Public Module SharedHelpers
                     r("Volume Occupancy") = preactor.ReadFieldDouble(ordersTable, volumeOcc, rec)
                     r("Kiln Type") = preactor.ReadFieldInt(ordersTable, klnType, rec)
                     r("MTS/MTO") = preactor.ReadFieldInt(ordersTable, mts, rec)
-                    r("Wheel Dia") = preactor.ReadFieldString(ordersTable, wheelDia, rec)
-                    r("Wheel thickness") = preactor.ReadFieldString(ordersTable, wheelThck, rec)
+                    r("Wheel Dia") = preactor.ReadFieldString(ordersTable, If(currentOpNo = 200, pressRing, wheelDia), rec)
+                    r("Wheel thickness") = preactor.ReadFieldString(ordersTable, If(currentOpNo = 200, pressPin, wheelThck), rec)
                     r("Pressing earliest start") =
                         preactor.ReadFieldDateTime(ordersTable, presEarlyStart, rec)
                     r("Pressing Due date") =
@@ -1361,79 +1342,6 @@ Public Module SharedHelpers
 
     End Function
 
-    'Private Function CreateWipInfo(targetRow As DataRow,
-    '                               prevRow As DataRow,
-    '                               hasAnyPriorScheduled As Boolean,
-    '                               lastPriorScheduledOpNo As Integer,
-    '                               hasFutureScheduledOp As Boolean,
-    '                               terminatorTime As DateTime,
-    '                               readyBufferMinutes As Integer,
-    '                               requirePrevScheduled As Boolean) As WipInfo
-
-    '    Dim result As New WipInfo With {
-    '        .CurrentOpRec = SafeInt(targetRow("OrdersID")),
-    '        .CurrentOpNo = SafeInt(targetRow("Operation Number")),
-    '        .ParentRecord = GetEffectiveParentRecord(targetRow),
-    '        .CurrentOpScheduled = SafeBool(targetRow("is_scheduled")),
-    '        .CurrentOpStarted = False,
-    '        .HasAnyPriorScheduled = hasAnyPriorScheduled,
-    '        .LastPriorScheduledOpNo = lastPriorScheduledOpNo,
-    '        .HasFutureScheduledOp = hasFutureScheduledOp
-    '    }
-
-    '    Dim startT As DateTime = SafeDate(targetRow("scheduled_start_time"))
-    '    If startT <> DateTime.MinValue AndAlso startT <= terminatorTime Then
-    '        result.CurrentOpStarted = True
-    '    End If
-
-    '    If prevRow IsNot Nothing Then
-    '        result.PrevOpRec = SafeInt(prevRow("OrdersID"))
-    '        result.PrevOpNo = SafeInt(prevRow("Operation Number"))
-    '        result.PrevOpScheduled = SafeBool(prevRow("is_scheduled"))
-
-    '        If result.PrevOpScheduled Then
-    '            result.PrevOpEndTime = SafeDate(prevRow("scheduled_end_time"))
-    '        End If
-    '    End If
-
-    '    If result.PrevOpScheduled AndAlso result.PrevOpEndTime <> DateTime.MinValue Then
-    '        result.ReadyTime = result.PrevOpEndTime.AddMinutes(readyBufferMinutes)
-    '    Else
-    '        result.ReadyTime = DateTime.MinValue
-    '    End If
-
-    '    If result.LastPriorScheduledOpNo > 0 Then
-    '        result.WipScore = 1000 + result.LastPriorScheduledOpNo
-    '    Else
-    '        result.WipScore = 0
-    '    End If
-
-    '    result.CandidateStatus = "Candidate"
-    '    result.RejectReason = ""
-
-    '    If result.CurrentOpScheduled Then
-    '        result.CandidateStatus = "Rejected"
-    '        result.RejectReason = "Current operation already scheduled"
-    '    ElseIf result.CurrentOpStarted Then
-    '        result.CandidateStatus = "Rejected"
-    '        result.RejectReason = "Current operation already started or historical"
-    '    ElseIf result.HasFutureScheduledOp Then
-    '        result.CandidateStatus = "Rejected"
-    '        result.RejectReason = "Future operation already scheduled"
-    '    ElseIf requirePrevScheduled AndAlso result.PrevOpRec <= 0 Then
-    '        result.CandidateStatus = "Rejected"
-    '        result.RejectReason = "No previous operation found"
-    '    ElseIf requirePrevScheduled AndAlso Not result.PrevOpScheduled Then
-    '        result.CandidateStatus = "Rejected"
-    '        result.RejectReason = "Previous operation not scheduled"
-    '    ElseIf requirePrevScheduled AndAlso result.PrevOpEndTime = DateTime.MinValue Then
-    '        result.CandidateStatus = "Rejected"
-    '        result.RejectReason = "Previous operation has no valid end time"
-    '    End If
-
-    '    Return result
-
-    'End Function
     Private Function CreateWipInfo(targetRow As DataRow,
                                prevRow As DataRow,
                                hasAnyPriorScheduled As Boolean,
@@ -1548,29 +1456,6 @@ Public Module SharedHelpers
            wip.CandidateStatus.Equals("Candidate", StringComparison.OrdinalIgnoreCase)
     End Function
 
-    'Private Sub WriteWipColumns(row As DataRow, wip As WipInfo)
-
-    '    row("wip_current_op_scheduled") = wip.CurrentOpScheduled
-    '    row("wip_current_op_started") = wip.CurrentOpStarted
-    '    row("wip_prev_op_rec") = wip.PrevOpRec
-    '    row("wip_prev_op_no") = wip.PrevOpNo
-    '    row("wip_prev_op_scheduled") = wip.PrevOpScheduled
-    '    row("wip_prev_op_end_time") =
-    '        If(wip.PrevOpEndTime = DateTime.MinValue,
-    '           CType(DBNull.Value, Object),
-    '           CType(wip.PrevOpEndTime, Object))
-    '    row("wip_any_prior_scheduled") = wip.HasAnyPriorScheduled
-    '    row("wip_last_prior_scheduled_op_no") = wip.LastPriorScheduledOpNo
-    '    row("wip_has_future_scheduled_op") = wip.HasFutureScheduledOp
-    '    row("wip_ready_time") =
-    '        If(wip.ReadyTime = DateTime.MinValue,
-    '           CType(DBNull.Value, Object),
-    '           CType(wip.ReadyTime, Object))
-    '    row("wip_score") = wip.WipScore
-    '    row("wip_status") = wip.CandidateStatus
-    '    row("wip_reject_reason") = wip.RejectReason
-
-    'End Sub
     Private Sub WriteWipColumns(row As DataRow, wip As WipInfo)
 
         row("wip_current_op_scheduled") = wip.CurrentOpScheduled
@@ -1908,85 +1793,6 @@ Public Module SharedHelpers
 
     End Sub
 
-    'Private Sub PopulateOrderWipColumns(orderRows As List(Of DataRow),
-    '                                    terminatorTime As DateTime)
-
-    '    If orderRows.Count = 0 Then Return
-
-    '    ' A future operation is one with a strictly greater operation number.
-    '    ' Compute that state once per operation-number group.
-    '    Dim hasFutureScheduled(orderRows.Count - 1) As Boolean
-    '    Dim futureScheduled As Boolean = False
-    '    Dim groupEnd As Integer = orderRows.Count - 1
-
-    '    While groupEnd >= 0
-    '        Dim opNo As Integer = SafeInt(orderRows(groupEnd)("Operation Number"))
-    '        Dim groupStart As Integer = groupEnd
-
-    '        While groupStart > 0 AndAlso
-    '              SafeInt(orderRows(groupStart - 1)("Operation Number")) = opNo
-    '            groupStart -= 1
-    '        End While
-
-    '        For i As Integer = groupStart To groupEnd
-    '            hasFutureScheduled(i) = futureScheduled
-    '        Next
-
-    '        For i As Integer = groupStart To groupEnd
-    '            If SafeBool(orderRows(i)("is_scheduled")) Then
-    '                futureScheduled = True
-    '                Exit For
-    '            End If
-    '        Next
-
-    '        groupEnd = groupStart - 1
-    '    End While
-
-    '    Dim prevRow As DataRow = Nothing
-    '    Dim hasAnyPriorScheduled As Boolean = False
-    '    Dim lastPriorScheduledOpNo As Integer = 0
-    '    Dim groupStartForward As Integer = 0
-
-    '    While groupStartForward < orderRows.Count
-    '        Dim opNo As Integer =
-    '            SafeInt(orderRows(groupStartForward)("Operation Number"))
-    '        Dim groupEndForward As Integer = groupStartForward
-
-    '        While groupEndForward + 1 < orderRows.Count AndAlso
-    '              SafeInt(orderRows(groupEndForward + 1)("Operation Number")) = opNo
-    '            groupEndForward += 1
-    '        End While
-
-    '        For i As Integer = groupStartForward To groupEndForward
-    '            Dim wip As WipInfo =
-    '                CreateWipInfo(orderRows(i),
-    '                              prevRow,
-    '                              hasAnyPriorScheduled,
-    '                              lastPriorScheduledOpNo,
-    '                              hasFutureScheduled(i),
-    '                              terminatorTime,
-    '                              0,
-    '                              False)
-
-    '            WriteWipColumns(orderRows(i), wip)
-    '        Next
-
-    '        For i As Integer = groupStartForward To groupEndForward
-    '            If SafeBool(orderRows(i)("is_scheduled")) AndAlso
-    '               SafeDate(orderRows(i)("scheduled_end_time")) <> DateTime.MinValue Then
-
-    '                hasAnyPriorScheduled = True
-    '                lastPriorScheduledOpNo = opNo
-    '            End If
-    '        Next
-
-    '        ' Rows are sorted by operation number and record ID, so the final
-    '        ' row in this group matches the old previous-operation tie-break.
-    '        prevRow = orderRows(groupEndForward)
-    '        groupStartForward = groupEndForward + 1
-    '    End While
-
-    'End Sub
 
     Private Sub PopulateOrderWipColumns(orderRows As List(Of DataRow),
                                     terminatorTime As DateTime)
@@ -2282,13 +2088,15 @@ Public Module SharedHelpers
                 MaxDate(planningboard.TerminatorTime, metadataDate, lastScheduledEnd)
             result(resourceName) = effective
 
-            System.Diagnostics.Debug.WriteLine(
-                "Effective Resource Start | Resource=" & resourceName &
-                " | Terminator=" & FormatDateOrBlank(planningboard.TerminatorTime) &
-                " | Metadata=" & FormatDateOrBlank(metadataDate) &
-                " | LastScheduledEnd=" & FormatDateOrBlank(lastScheduledEnd) &
-                " | Effective=" & FormatDateOrBlank(effective)
-            )
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                System.Diagnostics.Debug.WriteLine(
+                    "Effective Resource Start | Resource=" & resourceName &
+                    " | Terminator=" & FormatDateOrBlank(planningboard.TerminatorTime) &
+                    " | Metadata=" & FormatDateOrBlank(metadataDate) &
+                    " | LastScheduledEnd=" & FormatDateOrBlank(lastScheduledEnd) &
+                    " | Effective=" & FormatDateOrBlank(effective)
+                )
+            End If
 
         Next
 
@@ -2325,13 +2133,15 @@ Public Module SharedHelpers
         Dim effective As DateTime =
         MaxDate(terminator, metadataDate, lastScheduledEnd)
 
-        System.Diagnostics.Debug.WriteLine(
-        "Effective Resource Start | Resource=" & resourceName &
-        " | Terminator=" & FormatDateOrBlank(terminator) &
-        " | Metadata=" & FormatDateOrBlank(metadataDate) &
-        " | LastScheduledEnd=" & FormatDateOrBlank(lastScheduledEnd) &
-        " | Effective=" & FormatDateOrBlank(effective)
-    )
+        If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+            System.Diagnostics.Debug.WriteLine(
+                "Effective Resource Start | Resource=" & resourceName &
+                " | Terminator=" & FormatDateOrBlank(terminator) &
+                " | Metadata=" & FormatDateOrBlank(metadataDate) &
+                " | LastScheduledEnd=" & FormatDateOrBlank(lastScheduledEnd) &
+                " | Effective=" & FormatDateOrBlank(effective)
+            )
+        End If
 
         Return effective
 
@@ -2762,13 +2572,15 @@ Public Module SharedHelpers
 
             result(resourceName) = effectiveStart
 
-            System.Diagnostics.Debug.WriteLine(
-                "GN Availability | Resource=" & resourceName &
-                " | Terminator=" & FormatDateOrBlank(terminator) &
-                " | Metadata=" & FormatDateOrBlank(metadataDate) &
-                " | LastScheduledEnd=" & FormatDateOrBlank(lastScheduledEnd) &
-                " | EffectiveStart=" & FormatDateOrBlank(effectiveStart)
-            )
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                System.Diagnostics.Debug.WriteLine(
+                    "GN Availability | Resource=" & resourceName &
+                    " | Terminator=" & FormatDateOrBlank(terminator) &
+                    " | Metadata=" & FormatDateOrBlank(metadataDate) &
+                    " | LastScheduledEnd=" & FormatDateOrBlank(lastScheduledEnd) &
+                    " | EffectiveStart=" & FormatDateOrBlank(effectiveStart)
+                )
+            End If
 
         Next
 

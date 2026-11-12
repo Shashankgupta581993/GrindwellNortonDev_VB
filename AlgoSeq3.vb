@@ -65,20 +65,23 @@ Public Class AlgoSeq3
         Private _decisionLogPath As String
         Private _scheduleExportPath As String
 
-        Private Sub InitLogging()
-            _runId = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture)
-            _logDir = Path.Combine(Directory.GetCurrentDirectory(), "AlgoSeqLogs")
-            Directory.CreateDirectory(_logDir)
-
-
+    Private Sub InitLogging()
+        Dim decisionLog As Boolean = SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3DecisionLog)
+        Dim scheduleLog As Boolean = SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3ScheduleLog)
+        If Not decisionLog AndAlso Not scheduleLog Then Return
+        _runId = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture)
+        _logDir = Path.Combine(Directory.GetCurrentDirectory(), "AlgoSeqLogs")
+        Directory.CreateDirectory(_logDir)
+        If decisionLog Then
             _decisionLogPath = Path.Combine(_logDir, $"DecisionLog_{_runId}.csv")
+            File.WriteAllText(_decisionLogPath,
+                "RunId,Phase,OpRec,OrderNo,OpNo,ResGroup,ChosenRes,PlanDay,Start,Finish,BatchOrCartId,kilnType,CycleType,Occ,Score,Reason" & Environment.NewLine)
+        End If
+        If scheduleLog Then
             _scheduleExportPath = Path.Combine(_logDir, $"PlannedSchedule_{_runId}.csv")
-
-        File.WriteAllText(_decisionLogPath,
-                              "RunId,Phase,OpRec,OrderNo,OpNo,ResGroup,ChosenRes,PlanDay,Start,Finish,BatchOrCartId,kilnType,CycleType,Occ,Score,Reason" & Environment.NewLine)
-
-        File.WriteAllText(_scheduleExportPath,
-                              "RunId,OpRec,OrderNo,OpNo,OpName,ResGroup,ChosenRes,PlanDay,Start,Finish,BatchOrCartId,kilnType,CycleType,Occ" & Environment.NewLine)
+            File.WriteAllText(_scheduleExportPath,
+                "RunId,OpRec,OrderNo,OpNo,OpName,ResGroup,ChosenRes,PlanDay,Start,Finish,BatchOrCartId,kilnType,CycleType,Occ" & Environment.NewLine)
+        End If
     End Sub
 
     Private Sub LogDecision(phase As String,
@@ -97,32 +100,36 @@ Public Class AlgoSeq3
                                 score As Double,
                                 reason As String)
 
-        Dim sStart As String = If(startTime.HasValue, startTime.Value.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture), "")
-        Dim sFinish As String = If(finishTime.HasValue, finishTime.Value.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture), "")
+        If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3DecisionLog) Then
+            Dim sStart As String = If(startTime.HasValue, startTime.Value.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture), "")
+            Dim sFinish As String = If(finishTime.HasValue, finishTime.Value.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture), "")
 
-        Dim line = String.Join(",",
-                Csv(_runId),
-                Csv(phase),
-                opRec.ToString(CultureInfo.InvariantCulture),
-                Csv(orderNo),
-                opNo.ToString(CultureInfo.InvariantCulture),
-                Csv(resGroup),
-                Csv(chosenRes),
-                Csv(planDay.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)),
-                Csv(sStart),
-                Csv(sFinish),
-                Csv(batchOrCartId),
-                Csv(kilnType),
-                Csv(cycleType),
-                occ.ToString(CultureInfo.InvariantCulture),
-                score.ToString(CultureInfo.InvariantCulture),
-                Csv(reason)
-            ) & Environment.NewLine
+            Dim line = String.Join(",",
+                    Csv(_runId),
+                    Csv(phase),
+                    opRec.ToString(CultureInfo.InvariantCulture),
+                    Csv(orderNo),
+                    opNo.ToString(CultureInfo.InvariantCulture),
+                    Csv(resGroup),
+                    Csv(chosenRes),
+                    Csv(planDay.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)),
+                    Csv(sStart),
+                    Csv(sFinish),
+                    Csv(batchOrCartId),
+                    Csv(kilnType),
+                    Csv(cycleType),
+                    occ.ToString(CultureInfo.InvariantCulture),
+                    score.ToString(CultureInfo.InvariantCulture),
+                    Csv(reason)
+                ) & Environment.NewLine
 
-        File.AppendAllText(_decisionLogPath, line)
+            File.AppendAllText(_decisionLogPath, line)
+        End If
 
         ' Also write to VS Output window (Debug)
-        Debug.WriteLine($"[{phase}] opRec={opRec} order={orderNo} opNo={opNo} resGrp={resGroup} res={chosenRes} day={planDay:yyyy-MM-dd} reason={reason}")
+        If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+            Debug.WriteLine($"[{phase}] opRec={opRec} order={orderNo} opNo={opNo} resGrp={resGroup} res={chosenRes} day={planDay:yyyy-MM-dd} reason={reason}")
+        End If
     End Sub
 
     Private Sub ExportPlannedRow(opRec As Integer,
@@ -139,6 +146,7 @@ Public Class AlgoSeq3
                                     cycleType As String,
                                     occ As Double)
 
+        If Not SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3ScheduleLog) Then Return
         Dim line = String.Join(",",
                 Csv(_runId),
                 opRec.ToString(CultureInfo.InvariantCulture),
@@ -280,8 +288,10 @@ Public Class AlgoSeq3
         End If
 
         Dim routing As DataTable = ReadRoutingCsv(csvPath)
-        LogDecision("INIT", 0, "", 0, "", "", DateTime.Today, Nothing, Nothing, "", "", "", 0, 0,
-                        $"Loaded CSV rows={routing.Rows.Count} from {csvPath}. Exports: {_decisionLogPath} ; {_scheduleExportPath}")
+        If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3DecisionLog) OrElse SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+            LogDecision("INIT", 0, "", 0, "", "", DateTime.Today, Nothing, Nothing, "", "", "", 0, 0,
+                            $"Loaded CSV rows={routing.Rows.Count} from {csvPath}. Exports: {_decisionLogPath} ; {_scheduleExportPath}")
+        End If
 
         ' ------------------------------------------------------
         ' 2) Build OpInfo map from CSV.
@@ -310,8 +320,10 @@ Public Class AlgoSeq3
         ' ------------------------------------------------------
         ApplyFiringPlan(preactor, planningboard, opsByRec, opRecByOrderAndOpNo)
 
-        LogDecision("DONE", 0, "", 0, "", "", DateTime.Today, Nothing, Nothing, "", "", "", 0, 0,
-                        $"Completed. DecisionLog={_decisionLogPath} PlannedSchedule={_scheduleExportPath}")
+        If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3DecisionLog) OrElse SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+            LogDecision("DONE", 0, "", 0, "", "", DateTime.Today, Nothing, Nothing, "", "", "", 0, 0,
+                            $"Completed. DecisionLog={_decisionLogPath} PlannedSchedule={_scheduleExportPath}")
+        End If
 
         Return 0
     End Function
@@ -404,7 +416,9 @@ Public Class AlgoSeq3
                 ToList()
 
         If pressOps.Count = 0 Then
-            LogDecision("PRESSING", 0, "", 200, "", "", DateTime.Today, Nothing, Nothing, "", "", "", 0, 0, "No Op200 rows found in CSV.")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3DecisionLog) OrElse SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                LogDecision("PRESSING", 0, "", 200, "", "", DateTime.Today, Nothing, Nothing, "", "", "", 0, 0, "No Op200 rows found in CSV.")
+            End If
             Exit Sub
         End If
 
@@ -487,8 +501,10 @@ Public Class AlgoSeq3
             Next
 
             If bestResRec <= 0 OrElse Not bestTimes.HasValue Then
-                LogDecision("PRESSING_SKIP", op.OpRec, op.OrderNo, op.OpNo, op.ResGroup, "", planDay, Nothing, Nothing, "", "", "", op.VolumeOcc, 0,
-                                "No feasible press resource (cooldown/due/availability).")
+                If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3DecisionLog) OrElse SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                    LogDecision("PRESSING_SKIP", op.OpRec, op.OrderNo, op.OpNo, op.ResGroup, "", planDay, Nothing, Nothing, "", "", "", op.VolumeOcc, 0,
+                                    "No feasible press resource (cooldown/due/availability).")
+                End If
                 Continue For
             End If
 
@@ -513,11 +529,15 @@ Public Class AlgoSeq3
                 finishApprox = finishApprox.Value.Add(delta)
             End If
 
-            LogDecision("PRESSING_PUT", op.OpRec, op.OrderNo, op.OpNo, op.ResGroup, chosenResName, planDay,
-                            startTime, finishApprox, "", "", "", op.VolumeOcc, bestScore, bestReason)
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3DecisionLog) OrElse SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                LogDecision("PRESSING_PUT", op.OpRec, op.OrderNo, op.OpNo, op.ResGroup, chosenResName, planDay,
+                                startTime, finishApprox, "", "", "", op.VolumeOcc, bestScore, bestReason)
+            End If
 
-            ExportPlannedRow(op.OpRec, op.OrderNo, op.OpNo, op.OpName, op.ResGroup, chosenResName, planDay,
-                                 startTime, If(finishApprox.HasValue, finishApprox.Value, startTime), "", "", "", op.VolumeOcc)
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3ScheduleLog) Then
+                ExportPlannedRow(op.OpRec, op.OrderNo, op.OpNo, op.OpName, op.ResGroup, chosenResName, planDay,
+                                     startTime, If(finishApprox.HasValue, finishApprox.Value, startTime), "", "", "", op.VolumeOcc)
+            End If
 
             ' 5) OPTIONAL: forward schedule associated drying ops (200->280) until just before loading (290)
             '     We use planningboard.GetNextOperation(opRec, 1) exactly like your template,
@@ -538,7 +558,9 @@ Public Class AlgoSeq3
         ' Separate Op300 candidates by kiln type, grouped by PlanDay (WeekStart proxy)
         Dim op300 = opsByRec.Values.Where(Function(o) o.OpNo = 300).ToList()
         If op300.Count = 0 Then
-            LogDecision("FIRING", 0, "", 300, "", "", DateTime.Today, Nothing, Nothing, "", "", "", 0, 0, "No Op300 rows found in CSV.")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3DecisionLog) OrElse SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                LogDecision("FIRING", 0, "", 300, "", "", DateTime.Today, Nothing, Nothing, "", "", "", 0, 0, "No Op300 rows found in CSV.")
+            End If
             Exit Sub
         End If
 
@@ -741,22 +763,28 @@ Public Class AlgoSeq3
                 If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, op290Rec)
 
                 Dim resName = TryGetResourceNameSafe(preactor, resRec)
-                LogDecision("FIRING_PUT290", op290Rec, op300Info.OrderNo, 290, "(LOAD)", resName, day,
-                                startTime, TryGetApproxFinish(test.Value), batchOrCartId, op300Info.kilnType, cycleType, op300Info.VolumeOcc, 0,
-                                "Placed Op290 in morning window.")
+                If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3DecisionLog) OrElse SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                    LogDecision("FIRING_PUT290", op290Rec, op300Info.OrderNo, 290, "(LOAD)", resName, day,
+                                    startTime, TryGetApproxFinish(test.Value), batchOrCartId, op300Info.kilnType, cycleType, op300Info.VolumeOcc, 0,
+                                    "Placed Op290 in morning window.")
+                End If
                 placed290 = True
                 Exit For
             Next
 
             If Not placed290 Then
-                LogDecision("FIRING_SKIP290", op290Rec, op300Info.OrderNo, 290, "(LOAD)", "", day,
-                                Nothing, Nothing, batchOrCartId, op300Info.kilnType, cycleType, op300Info.VolumeOcc, 0,
-                                "Could not place Op290 within morning window.")
+                If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3DecisionLog) OrElse SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                    LogDecision("FIRING_SKIP290", op290Rec, op300Info.OrderNo, 290, "(LOAD)", "", day,
+                                    Nothing, Nothing, batchOrCartId, op300Info.kilnType, cycleType, op300Info.VolumeOcc, 0,
+                                    "Could not place Op290 within morning window.")
+                End If
             End If
         Else
-            LogDecision("FIRING_NO290", 0, op300Info.OrderNo, 290, "(LOAD)", "", day,
-                            Nothing, Nothing, batchOrCartId, op300Info.kilnType, cycleType, op300Info.VolumeOcc, 0,
-                            "No Op290 found for this order in CSV lookup.")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3DecisionLog) OrElse SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                LogDecision("FIRING_NO290", 0, op300Info.OrderNo, 290, "(LOAD)", "", day,
+                                Nothing, Nothing, batchOrCartId, op300Info.kilnType, cycleType, op300Info.VolumeOcc, 0,
+                                "No Op290 found for this order in CSV lookup.")
+            End If
         End If
         VerifyOpRecMapping(preactor, op300Info.OpRec, 300, op300Info.OrderNo, "FIRING_300")
         ' 2) Schedule Op300 on kiln/tunnel resources
@@ -775,25 +803,31 @@ Public Class AlgoSeq3
 
             Dim resName = TryGetResourceNameSafe(preactor, resRec)
 
-            LogDecision("FIRING_PUT300", op300Rec, op300Info.OrderNo, 300, op300Info.ResGroup, resName, day,
-                            startTime, TryGetApproxFinish(test.Value), batchOrCartId, op300Info.kilnType, cycleType, op300Info.VolumeOcc, 0,
-                            "Placed Op300 based on batch/cart assignment.")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3DecisionLog) OrElse SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                LogDecision("FIRING_PUT300", op300Rec, op300Info.OrderNo, 300, op300Info.ResGroup, resName, day,
+                                startTime, TryGetApproxFinish(test.Value), batchOrCartId, op300Info.kilnType, cycleType, op300Info.VolumeOcc, 0,
+                                "Placed Op300 based on batch/cart assignment.")
+            End If
 
             ' Export planned row (use test-based finish approximation when available)
             Dim finishApprox = TryGetApproxFinish(test.Value)
             If Not finishApprox.HasValue Then finishApprox = startTime
 
-            ExportPlannedRow(op300Rec, op300Info.OrderNo, 300, op300Info.OpName, op300Info.ResGroup, resName, day,
-                                 startTime, finishApprox.Value, batchOrCartId, op300Info.kilnType, cycleType, op300Info.VolumeOcc)
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3ScheduleLog) Then
+                ExportPlannedRow(op300Rec, op300Info.OrderNo, 300, op300Info.OpName, op300Info.ResGroup, resName, day,
+                                     startTime, finishApprox.Value, batchOrCartId, op300Info.kilnType, cycleType, op300Info.VolumeOcc)
+            End If
 
             placed300 = True
             Exit For ' V1: take first feasible resource
         Next
 
         If Not placed300 Then
-            LogDecision("FIRING_SKIP300", op300Rec, op300Info.OrderNo, 300, op300Info.ResGroup, "", day,
-                            Nothing, Nothing, batchOrCartId, op300Info.kilnType, cycleType, op300Info.VolumeOcc, 0,
-                            "Could not place Op300 on any resource.")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3DecisionLog) OrElse SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                LogDecision("FIRING_SKIP300", op300Rec, op300Info.OrderNo, 300, op300Info.ResGroup, "", day,
+                                Nothing, Nothing, batchOrCartId, op300Info.kilnType, cycleType, op300Info.VolumeOcc, 0,
+                                "Could not place Op300 on any resource.")
+            End If
         End If
 
         ' 3) Optional: forward schedule unload and other ops up to 320 (as you requested)
@@ -840,9 +874,11 @@ Public Class AlgoSeq3
                 If mesPlacementSucceeded Then MesSchedulingDates.StampSuccessfulPlacement(preactor, nextRec)
 
                 Dim resName = TryGetResourceNameSafe(preactor, resRec)
-                LogDecision("FWD_PUT", nextRec, info.OrderNo, info.OpNo, info.ResGroup, resName, DateTime.Today,
-                                test.Value.ChangeStart, TryGetApproxFinish(test.Value), "", info.kilnType, info.CycleType, info.VolumeOcc, 0,
-                                "Forward-scheduled associated operation.")
+                If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.AlgoSeq3DecisionLog) OrElse SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                    LogDecision("FWD_PUT", nextRec, info.OrderNo, info.OpNo, info.ResGroup, resName, DateTime.Today,
+                                    test.Value.ChangeStart, TryGetApproxFinish(test.Value), "", info.kilnType, info.CycleType, info.VolumeOcc, 0,
+                                    "Forward-scheduled associated operation.")
+                End If
                 Exit For
                 Next
 
@@ -972,13 +1008,16 @@ Public Class AlgoSeq3
                                expectedOpNo As Integer,
                                csvOrderNo As String,
                                phase As String)
+        If Not SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then Return
 
         ' IMPORTANT: Replace "Operations" with your actual operations table name
         ' if it's different in your dataset (common names: "Operations", "Order Operations")
         Dim opsTable As String = "Orders"
 
         If opRec <= 0 Then
-            Debug.WriteLine($"[VERIFY][{phase}] opRec invalid: {opRec}")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine($"[VERIFY][{phase}] opRec invalid: {opRec}")
+            End If
             Exit Sub
         End If
 
@@ -987,12 +1026,16 @@ Public Class AlgoSeq3
         Try
             rc = preactor.RecordCount(opsTable)
         Catch ex As Exception
-            Debug.WriteLine($"[VERIFY][{phase}] Could not access table '{opsTable}'. Exception: {ex.Message}")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine($"[VERIFY][{phase}] Could not access table '{opsTable}'. Exception: {ex.Message}")
+            End If
             Exit Sub
         End Try
 
         If opRec > rc Then
-            Debug.WriteLine($"[VERIFY][{phase}] opRec={opRec} > RecordCount({opsTable})={rc}. CSV OrderNo={csvOrderNo}")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine($"[VERIFY][{phase}] opRec={opRec} > RecordCount({opsTable})={rc}. CSV OrderNo={csvOrderNo}")
+            End If
             Exit Sub
         End If
 
@@ -1002,7 +1045,9 @@ Public Class AlgoSeq3
         Try
             actualOpNo = preactor.ReadFieldInt(opsTable, "Op. No.", opRec)
         Catch ex As Exception
-            Debug.WriteLine($"[VERIFY][{phase}] Failed ReadFieldInt({opsTable}, 'Operation Number', {opRec}). Exception: {ex.Message}")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine($"[VERIFY][{phase}] Failed ReadFieldInt({opsTable}, 'Operation Number', {opRec}). Exception: {ex.Message}")
+            End If
             Exit Sub
         End Try
 
@@ -1015,9 +1060,13 @@ Public Class AlgoSeq3
         End Try
 
         If actualOpNo <> expectedOpNo Then
-            Debug.WriteLine($"[VERIFY][{phase}] MISMATCH: opRec={opRec} CSV OrderNo={csvOrderNo} OpNoExpected={expectedOpNo} OpNoActual={actualOpNo} OpOrderNo={actualOrderNo}")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine($"[VERIFY][{phase}] MISMATCH: opRec={opRec} CSV OrderNo={csvOrderNo} OpNoExpected={expectedOpNo} OpNoActual={actualOpNo} OpOrderNo={actualOrderNo}")
+            End If
         Else
-            Debug.WriteLine($"[VERIFY][{phase}] OK: opRec={opRec} CSV OrderNo={csvOrderNo} OpNo={actualOpNo} OpOrderNo={actualOrderNo}")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine($"[VERIFY][{phase}] OK: opRec={opRec} CSV OrderNo={csvOrderNo} OpNo={actualOpNo} OpOrderNo={actualOrderNo}")
+            End If
         End If
     End Sub
 
@@ -1027,15 +1076,20 @@ Public Class AlgoSeq3
     ' Use this once if you need more visibility.
     '---------------------------------------------
     Private Sub DumpOpRec(preactor As IPreactor, opRec As Integer, phase As String)
+        If Not SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then Return
         Dim opsTable As String = "Orders"
         Try
             Dim opNo = preactor.ReadFieldInt(opsTable, "Op. No.", opRec)
             Dim ordNo As String = ""
             Try : ordNo = preactor.ReadFieldString(opsTable, "Order No", opRec) : Catch : End Try
 
-            Debug.WriteLine($"[DUMP][{phase}] opRec={opRec} OrderNo={ordNo} OpNo={opNo}")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine($"[DUMP][{phase}] opRec={opRec} OrderNo={ordNo} OpNo={opNo}")
+            End If
         Catch ex As Exception
-            Debug.WriteLine($"[DUMP][{phase}] Failed to dump opRec={opRec}: {ex.Message}")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine($"[DUMP][{phase}] Failed to dump opRec={opRec}: {ex.Message}")
+            End If
         End Try
     End Sub
 

@@ -48,26 +48,82 @@ validated resource/interval stops the action for review. The already placed
 operation is not silently deleted or moved. Diagnostics are finalized even on
 that error path.
 
-## Setup-time integration, deliberately deferred
+## Press tooling setup
 
-The workbook's `SET UP  DATA` tab is the agreed future source. This phase neither
-imports its durations nor resolves “Old” versus “SEMED” methods, aggregate setup
-times, NULLs or nomenclature aliases.
+`Opcenter/PressSetupRates.csv` contains the 34 workstation rows from
+`Press Setup Data.xlsx`, sheet `Setup for Press`. Maintain all rates in the
+workbook. Publish a comma-separated UTF-8 CSV containing the workstations in the
+target Opcenter database. The `GrindwellNorton1` deployment has 21 matching finite
+resources. Blank rates are unavailable. Zero is an explicit rate. PL12001A and
+PL12001B use SEMED.
 
-Before commit, each selected slot carries previous ring/pin, next ring/pin, and
-`INITIAL_SETUP`, `UNCHANGED_TOOLING`, `PIN_ONLY_CHANGE`, or `RING_CHANGE`.
-`QueryPressCampaign` and `CommitPressCampaign` are the adapter seams. Future setup
-time must be included in the queried interval and placed exactly once. Appending
-it only after feasibility testing would invalidate capacity and urgency results.
+- During **Pressing**, contiguous operation-200 placements compare the ring and bore/pin
+  independently. Both known identities unchanged gives zero. If the press is
+  empty or setup starts after any idle time, both components are due. A gap
+  across nonworking calendar time also counts. Two timestamps that round to
+  the same saved Orders timestamp count as contiguous.
+- Add the applicable rates that exist and write their sum to the existing
+  Orders **Setup Time** field for operation 200. An unknown identity cannot
+  establish a change for that component. When no applicable rate exists, use
+  the site's original zero-minute base setup. This clears a prior calculated
+  setup if a rate disappears. If the site's imports introduce nonzero base
+  setups, the code needs a stable source for those values before deployment.
+- `runPress` uses the selected duration in the native feasibility query and
+  persists it only on a verified placement. A query that moves setup into an
+  idle gap is repeated with the new duration. The scheduler protects existing
+  allocations and includes the tested interval in campaign urgency decisions.
+- **Repair Press Setup** keeps future movable pressing operations on the same
+  press and in the same order. It computes the final Setup Time values from
+  the allocated sequence before writing any fields. Setup is charged only for tooling values that
+  differ and are known on both the current and preceding order, regardless
+  of any gap. The first order on an empty press uses the available rates for
+  its known tooling. Opcenter recalculates operation times once per affected
+  press using the existing allocations. Repair verifies the allocation set,
+  resource sequence, Setup Time, and Total Setup Time before accepting the result.
+  It restores the original fields and schedule if an allocation changes
+  unexpectedly or timing violates readiness, calendar, or dependency checks.
+  Use this action after changing press rates, tooling mappings, or a Gantt sequence.
 
-No automatic ad hoc or cooldown overrides are provided. Those remain planner
-decisions. Capacity and lateness results are provisional until setup is modeled.
+### Opcenter 2210 deployment
+
+1. Verify the existing Orders **Setup Time** field has the `SEQ SETUP`
+   classification. Opcenter can combine this duration with other setup
+   classifications. The audited `GrindwellNorton1` pressing orders had zero
+   base setup, zero positive resource-specific setup values, and no configured
+   changeover groups or setup-efficiency multipliers on the resources.
+2. Deploy the Branch2 assembly and its `.dll.config` at the registered x64
+   COM path. Set `PressSetupCsvPath` in the DLL configuration to the published
+   CSV. A relative path resolves from Opcenter `{PATH}`. The press action
+   explicitly reads the sidecar file. Existing host values take precedence by
+   key, including a blank path that disables the feature. The default mappings
+   are `PressRingField=String Attribute 5` and
+   `PressBorePinField=String Attribute 4`. Restart Opcenter to load a new DLL.
+3. Create a PESP script named **Repair Press Setup** with one Custom Action
+   calling `GrindwellNortonDev_VB.AlgoSeq4.RepairPressSetup`. Bind it to an
+   available Sequencer user-tool slot through **Tool Configuration**. Use the
+   same custom-action registration path as `runPress`. The native Repair
+   Schedule command does not run this script.
+4. In a named schedule copy, run the custom action and verify the recalculated
+   setup and process times, missing-rate fallback, protected operations, and
+   downstream dependencies. Confirm that the same records remain on each press
+   in the same sequence. Run the action again and confirm zero field changes.
+   Reopen the saved copy and check that the allocations and setup values persisted
+   before rolling out the build.
+
+Use the installed Siemens Opcenter APS 2210 configuration help for
+`SEQ SETUP` and PESP Custom Actions. The 2210 SDK API
+help covers the planning-board query, placement and schedule-state methods.
+To remove the feature from an enabled dataset, restore the site's base
+**Setup Time** values and rebuild the affected schedule on a copy first.
+A blank or absent `PressSetupCsvPath` in the effective configuration disables
+the Branch2 code path.
 
 ## Diagnostics
 
-Existing scheduler diagnostics must be enabled through the existing configuration
-when a production comparison is performed. No configuration toggle is changed by
-this implementation. With diagnostics enabled, `07_OptimizerCandidateTrace.csv`
+Scheduler diagnostics are controlled by the code-defined master and channel switches
+in `Debugging/SchedulerDebugCollector.vb`; see `DEBUGGER_SETTINGS.md`.
+For a production comparison, enable the same channels in both test builds.
+With candidate diagnostics enabled, `07_OptimizerCandidateTrace.csv`
 contains `CampaignDecision` entries with resource, previous/next tooling,
 transition classification, actual interval and cooldown expiry in `ReasonDetail`.
 Readiness exclusions and placement attempts remain in the existing trace files.
@@ -144,38 +200,13 @@ These figures are local regression measurements, not a promised live speedup.
 
 ## Turning diagnostics off
 
-The easiest explicit override is the Windows user environment variable
-`GN_SCHEDULER_DIAGNOSTICS_OFF` set to `1`. It disables this project's detailed
-scheduler diagnostics **and** metrics, even if the host configuration enables
-them. It does not disable Opcenter's own unrelated logging.
+Set `SchedulerDebugSettings.MasterEnabled = False` in
+`Debugging/SchedulerDebugCollector.vb`, rebuild, and reload the DLL in Opcenter.
+Each diagnostic channel also has its own Boolean setting. The master overrides
+all channels; environment variables and host app settings no longer enable or
+disable this project's diagnostics. See `DEBUGGER_SETTINGS.md` for profiles.
 
-1. Close Opcenter.
-2. In Windows, open **Edit environment variables for your account**.
-3. Under user variables, create `GN_SCHEDULER_DIAGNOSTICS_OFF` with value `1`.
-4. Relaunch Opcenter from a fresh launcher so it inherits the variable. If a
-   long-running launcher retains the old environment, restart it too.
-
-Alternatively, run this once in PowerShell, then restart Opcenter:
-
-```powershell
-[Environment]::SetEnvironmentVariable('GN_SCHEDULER_DIAGNOSTICS_OFF', '1', 'User')
-```
-
-Remove the override to restore the normal debug/metrics settings:
-
-```powershell
-[Environment]::SetEnvironmentVariable('GN_SCHEDULER_DIAGNOSTICS_OFF', $null, 'User')
-```
-
-Without this override, the existing `SchedulerDebugEnabled` and
-`SchedulerMetricsEnabled` app settings still control diagnostics. Both are
-`false` in the repository's `app.config`. For a hosted .NET DLL,
-`ConfigurationManager.AppSettings` reads the **host executable's configuration**;
-editing only `GrindwellNortonDev_VB.dll.config` may have no effect. An absent app
-setting falls back to `GN_SCHEDULER_DEBUG` or `GN_SCHEDULER_METRICS`, respectively;
-an explicit app setting takes precedence over those two fallback variables.
-
-When diagnostics are off, no campaign reporter is installed, decision payloads
-and strings are not constructed, and full before/after snapshots and CSV exports
-are skipped. Functional validation still runs. Tests change only their own
-process environment and do not change the user's saved Windows settings.
+With candidate diagnostics off, no campaign reporter is installed. Existing
+campaign feasibility and safety validation still runs. Operational errors,
+required prompts, business exports, and Opcenter's own logging remain separate.
+The diagnostics harness now tests isolated builds with code-defined settings.

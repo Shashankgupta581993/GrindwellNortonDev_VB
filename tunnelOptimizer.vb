@@ -269,7 +269,7 @@ Public Class tunnelOptimizer_vf
         ' Build candidates from op 300 rows (unscheduled) for tunnel kiln type = 2
         Dim list As New List(Of TunnelCandidate)()
         Dim beforeCount As Integer = 0
-        If debug IsNot Nothing AndAlso debug.Enabled Then
+        If debug IsNot Nothing AndAlso debug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then
             beforeCount = dt.AsEnumerable().Count(
                 Function(row) SafeInt(row(COL_OPNO)) = 300)
         End If
@@ -391,7 +391,7 @@ Public Class tunnelOptimizer_vf
                                        included As Boolean,
                                        reasonCode As String,
                                        reasonDetail As String)
-        If debug Is Nothing OrElse Not debug.Enabled Then Return
+        If debug Is Nothing OrElse Not debug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then Return
 
         Dim parentRecord As Integer = 0
         If row.Table.Columns.Contains("parent_record") Then
@@ -417,37 +417,6 @@ Public Class tunnelOptimizer_vf
     ' -----------------------------
     ' Cart packing (Rule 2 + Rule 5)
     ' -----------------------------
-    'Private Function PackCart(readyNow As List(Of TunnelCandidate),
-    '                          minOccPreferred As Double,
-    '                          maxOcc As Double) As List(Of TunnelCandidate)
-
-    '    ' Deterministic selection:
-    '    ' - iterate by earliest due date (Rule 5)
-    '    ' - tie by earliest ready time
-    '    ' - tie by larger occupancy first (fills cart quicker)
-    '    Dim sorted As New List(Of TunnelCandidate)(readyNow)
-    '    sorted.Sort(AddressOf CompareByDueReadyOcc)
-
-    '    Dim chosen As New List(Of TunnelCandidate)()
-    '    Dim occSum As Double = 0.0
-
-    '    For Each c In sorted
-    '        If occSum + c.Occ <= maxOcc + 0.0000001 Then
-    '            chosen.Add(c)
-    '            occSum += c.Occ
-
-    '            ' MinOccPreferred is only a preference:
-    '            ' once we reach it, we *may still add* if there is space, but we stop early
-    '            ' to keep carts moving (and reduce late risk). This is conservative and deterministic.
-    '            'If occSum + 0.0000001 >= minOccPreferred Then
-    '            '    Exit For
-    '            'End If
-    '        End If
-    '    Next
-
-    '    ' If we didn't reach minOccPreferred, we still return what we have (preference, not hard).
-    '    Return chosen
-    'End Function
 
     Private Function PackCart(readyNow As List(Of TunnelCandidate),
                           minOccPreferred As Double,
@@ -521,14 +490,6 @@ Public Class tunnelOptimizer_vf
         End If
     End Sub
 
-    'Private Shared Function CompareByDueReadyOcc(a As TunnelCandidate, b As TunnelCandidate) As Integer
-    '    Dim c As Integer = a.DueTime.CompareTo(b.DueTime)
-    '    If c <> 0 Then Return c
-    '    c = a.ReadyTime.CompareTo(b.ReadyTime)
-    '    If c <> 0 Then Return c
-    '    ' larger occupancy first
-    '    Return (-a.Occ.CompareTo(b.Occ))
-    'End Function
     Private Shared Function CompareByDueReadyOcc(a As TunnelCandidate, b As TunnelCandidate) As Integer
         Dim w As Integer = b.WipScore.CompareTo(a.WipScore)
         If w <> 0 Then Return w

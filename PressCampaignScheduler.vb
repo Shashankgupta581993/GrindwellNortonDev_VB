@@ -23,11 +23,12 @@ Friend Class PressCampaignSlot
     Public Property Resource As Integer
     Public Property Ring As String
     Public Property Pin As String
-    ' Start includes changeover, should the placement adapter later supply it.
+    ' Start is the setup start. ProcessStart is populated by the Opcenter adapter.
     Public Property Start As DateTime
+    Public Property ProcessStart As DateTime
     Public Property Finish As DateTime
-    ' Filled before Commit is called, providing a clear integration point for
-    ' the user's later changeover logic. These are decisions, not added durations.
+    Public Property IsPress As Boolean
+    Public Property SetupDays As Double
     Public Property PreviousRing As String
     Public Property PreviousPin As String
     Public Property Transition As String
@@ -53,6 +54,7 @@ Friend Class PressCampaignScheduler
     Private ReadOnly timeline As New Dictionary(Of Integer, List(Of PressCampaignSlot))
     Private ReadOnly cursor As New Dictionary(Of Integer, DateTime)
     Private ReadOnly query As Func(Of PressCampaignOrder, Integer, DateTime, PressCampaignSlot)
+    Private ReadOnly queryAfterTrial As Func(Of PressCampaignOrder, Integer, DateTime, PressCampaignSlot, PressCampaignSlot)
     Private ReadOnly place As Func(Of PressCampaignSlot, PressCampaignSlot)
     Private ReadOnly trace As Action(Of PressCampaignDecision)
     Private ReadOnly historyCache As New Dictionary(Of Integer, HistoryState)
@@ -86,9 +88,11 @@ Friend Class PressCampaignScheduler
                    history As IEnumerable(Of PressCampaignSlot),
                    queryPlacement As Func(Of PressCampaignOrder, Integer, DateTime, PressCampaignSlot),
                    commitPlacement As Func(Of PressCampaignSlot, PressCampaignSlot),
-                   decisionReporter As Action(Of PressCampaignDecision))
+                   decisionReporter As Action(Of PressCampaignDecision),
+                   Optional queryAfterTrialPlacement As Func(Of PressCampaignOrder, Integer, DateTime, PressCampaignSlot, PressCampaignSlot) = Nothing)
         boundary = scheduleBoundary
         query = queryPlacement
+        queryAfterTrial = queryAfterTrialPlacement
         place = commitPlacement
         trace = decisionReporter
         For Each item In history.OrderBy(Function(s) s.Start).ThenBy(Function(s) s.RecordNo)
@@ -205,7 +209,7 @@ Friend Class PressCampaignScheduler
 
     ' Replay ring transitions, not individual order completions. Same-ring jobs and
     ' idle gaps keep the campaign alive; pin changes do not start a ring cooldown.
-    Private Shared Function Violations(slots As IEnumerable(Of PressCampaignSlot)) As Dictionary(Of Integer, DateTime)
+    Friend Shared Function Violations(slots As IEnumerable(Of PressCampaignSlot)) As Dictionary(Of Integer, DateTime)
         Dim blocked As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
         Dim active As String = ""
         Dim result As New Dictionary(Of Integer, DateTime)
@@ -270,7 +274,8 @@ Friend Class PressCampaignScheduler
         End If
         Try
             Do
-                Dim slot = query(order, resource, atTime)
+                Dim slot = If(hypothetical IsNot Nothing AndAlso queryAfterTrial IsNot Nothing,
+                              queryAfterTrial(order, resource, atTime, hypothetical), query(order, resource, atTime))
                 If slot Is Nothing Then Return Nothing
                 slot.RecordNo = order.RecordNo
                 slot.Resource = resource
@@ -445,7 +450,7 @@ Friend Class PressCampaignScheduler
                         .CooldownUntil = If(selected.Transition = "RING_CHANGE", CType(ReturnDate(actual.Start), DateTime?), Nothing),
                         .Reason = If(interrupted, "PRESSING_URGENCY_INTERRUPTION",
                             If(continuing, "PRESSING_CAMPAIGN_CONTINUED", "PRESSING_CAMPAIGN_STARTED")),
-                        .Detail = "Setup durations excluded in this phase; original WIP/date rank retained within campaign decisions."})
+                        .Detail = "Original WIP/date rank retained within campaign decisions."})
                 End If
                 pending.Remove(selected.RecordNo)
             End If

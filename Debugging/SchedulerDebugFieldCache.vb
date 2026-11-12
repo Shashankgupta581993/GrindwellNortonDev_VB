@@ -155,15 +155,17 @@ Public Class SchedulerDebugFieldCache
             End Try
         Next
         _fields(logicalName) = entry
-        _fieldMapRows.Add(New DebugFieldMapRow With {
-            .LogicalFieldName = logicalName,
-            .RequestedFieldName = entry.RequestedName,
-            .ResolvedFieldName = entry.ResolvedName,
-            .FieldNumber = entry.FieldNumber,
-            .Exists = entry.FieldNumber > 0,
-            .UsedFallback = entry.UsedFallback,
-            .Detail = If(entry.FieldNumber > 0, If(entry.UsedFallback, "Fallback field used.", "Primary field used."), "Field not found.")
-        })
+        If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.FieldMap) Then
+            _fieldMapRows.Add(New DebugFieldMapRow With {
+                .LogicalFieldName = logicalName,
+                .RequestedFieldName = entry.RequestedName,
+                .ResolvedFieldName = entry.ResolvedName,
+                .FieldNumber = entry.FieldNumber,
+                .Exists = entry.FieldNumber > 0,
+                .UsedFallback = entry.UsedFallback,
+                .Detail = If(entry.FieldNumber > 0, If(entry.UsedFallback, "Fallback field used.", "Primary field used."), "Field not found.")
+            })
+        End If
     End Sub
 
     Private Function GetFieldNo(logicalName As String) As Integer

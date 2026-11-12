@@ -15,7 +15,7 @@ Public Class SchedulerGptProblemStatementBuilder
         "05_WipChainDiagnostics.csv", "06_StageEligibilityDiagnostics.csv",
         "07_OptimizerCandidateTrace.csv", "08_BatchTunnelSwkPlanTrace.csv",
         "09_ScheduleAttemptTrace.csv", "10_ResourceValidation.csv",
-        "11_ReasonCodeSummary.csv", "12_GptProblemStatement.md",
+        "11_ReasonCodeSummary.csv", "12_ActionMetrics.csv", "12_GptProblemStatement.md",
         "13_GptProblemStatement.json"
     }
 
@@ -37,9 +37,19 @@ Public Class SchedulerGptProblemStatementBuilder
     }
 
     Public Shared Sub WriteFiles(debug As SchedulerDebugCollector)
+        If debug Is Nothing OrElse Not debug.Collects(SchedulerDebugChannel.ProblemStatementExport) Then Return
         WriteMarkdown(Path.Combine(debug.ExportFolder, "12_GptProblemStatement.md"), debug)
         WriteJson(Path.Combine(debug.ExportFolder, "13_GptProblemStatement.json"), debug)
     End Sub
+
+    Private Shared Function GeneratedFiles(debug As SchedulerDebugCollector) As String()
+        Dim generated As New List(Of String)()
+        For Each fileName In Files
+            If fileName = "12_GptProblemStatement.md" OrElse fileName = "13_GptProblemStatement.json" OrElse
+               debug.GeneratedFiles.Contains(fileName) Then generated.Add(fileName)
+        Next
+        Return generated.ToArray()
+    End Function
 
     Private Shared Sub WriteMarkdown(path As String, debug As SchedulerDebugCollector)
         Dim sb As New StringBuilder()
@@ -65,7 +75,7 @@ Public Class SchedulerGptProblemStatementBuilder
         sb.AppendLine("- Only unscheduled operations should be selected by optimizers.")
         sb.AppendLine("- WIP must be considered across all operations.").AppendLine()
         sb.AppendLine("## Files in this debug package")
-        For Each fileName In Files
+        For Each fileName In GeneratedFiles(debug)
             sb.AppendLine("- " & fileName)
         Next
         sb.AppendLine().AppendLine("## Questions for GPT")
@@ -81,7 +91,7 @@ Public Class SchedulerGptProblemStatementBuilder
             {"debugPackageVersion", "1.0"},
             {"runId", debug.RunId},
             {"exportedAt", debug.ExportedAt.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)},
-            {"files", Files},
+            {"files", GeneratedFiles(debug)},
             {"stages", New String() {"Pressing", "Drying", "BatchFiring", "TunnelFiring", "SWK", "FiringFollowOn", "PostFiring400Plus"}},
             {"questionsForGpt", Questions}
         }

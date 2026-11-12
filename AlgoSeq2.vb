@@ -41,7 +41,9 @@ Public Class AlgoSeq2
 
         ' Example: loop through rows
         For Each row As DataRow In routingDt.Rows
-            Debug.WriteLine(row(0).ToString())
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine(row(0).ToString())
+            End If
         Next
 
 
@@ -50,19 +52,28 @@ Public Class AlgoSeq2
 
 
     Public Sub PrintDataTable(dt As DataTable)
-        Debug.WriteLine("------ DATA TABLE ------")
+        If Not SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then Return
+        If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+            Debug.WriteLine("------ DATA TABLE ------")
+        End If
 
         ' Print header
         Dim header As String = String.Join(" | ", dt.Columns.Cast(Of DataColumn).Select(Function(c) c.ColumnName))
-        Debug.WriteLine(header)
+        If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+            Debug.WriteLine(header)
+        End If
 
         ' Print rows
         For Each row As DataRow In dt.Rows
             Dim line As String = String.Join(" | ", row.ItemArray.Select(Function(v) v.ToString()))
-            Debug.WriteLine(line)
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine(line)
+            End If
         Next
 
-        Debug.WriteLine("-------------------------")
+        If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+            Debug.WriteLine("-------------------------")
+        End If
     End Sub
 
 
@@ -75,7 +86,9 @@ Public Class AlgoSeq2
         ' --- Resolve Orders table ---
         Dim ordersLaunch = preactor.FindFirstClassificationString("LAUNCH TIME")
         If Not ordersLaunch.HasValue Then
-            Debug.WriteLine("Orders: LAUNCH TIME field not found. Abort.")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine("Orders: LAUNCH TIME field not found. Abort.")
+            End If
             Return results
         End If
         Dim ordersTable As Integer = ordersLaunch.Value.FormatNumber
@@ -83,7 +96,9 @@ Public Class AlgoSeq2
         ' --- Get Orders.NUMBER field ---
         Dim ordersNumber = preactor.FindFirstClassificationString("NUMBER")
         If Not ordersNumber.HasValue Then
-            Debug.WriteLine("Orders: NUMBER field not found. Abort.")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine("Orders: NUMBER field not found. Abort.")
+            End If
             Return results
         End If
 
@@ -92,7 +107,9 @@ Public Class AlgoSeq2
         If Not opsOrderNo.HasValue Then
             opsOrderNo = preactor.FindFirstClassificationString("ORDER NO")
             If Not opsOrderNo.HasValue Then
-                Debug.WriteLine("Operations: ORDER NUMBER / ORDER NO field not found. Abort.")
+                If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                    Debug.WriteLine("Operations: ORDER NUMBER / ORDER NO field not found. Abort.")
+                End If
                 Return results
             End If
         End If
@@ -100,7 +117,9 @@ Public Class AlgoSeq2
         ' --- Ops duration field ---
         Dim opDuration = preactor.FindFirstClassificationString("Op. Time per Item")
         If Not opDuration.HasValue Then
-            Debug.WriteLine("Operations: OPERATION TIME field not found. Abort.")
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DebugOutput) Then
+                Debug.WriteLine("Operations: OPERATION TIME field not found. Abort.")
+            End If
             Return results
         End If
 
@@ -194,7 +213,9 @@ Public Class AlgoSeq2
                     weekNumber = cal.GetWeekOfYear(firingtime.Value.OperationTimes.ProcessStart, weekRule, firstDayOfWeek)
 
                     ' your code is here
-                    MsgBox("Order No.:" & orderno & vbNewLine & "duration total :" & durationvalue.ToString() & vbNewLine & "firingrec:" & firingtime.Value.OperationTimes.ProcessStart.ToString() & vbNewLine & "weekdaynumber:" & weekdayNumber & vbNewLine & "weeknumber:" & weekNumber)
+                    If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DiagnosticPopups) Then
+                        MsgBox("Order No.:" & orderno & vbNewLine & "duration total :" & durationvalue.ToString() & vbNewLine & "firingrec:" & firingtime.Value.OperationTimes.ProcessStart.ToString() & vbNewLine & "weekdaynumber:" & weekdayNumber & vbNewLine & "weeknumber:" & weekNumber)
+                    End If
                     dt.Rows.Add(orderno, durationvalue.ToString(), firingtime.Value.OperationTimes.ProcessStart.ToString(), weekdayNumber, weekNumber, cycletype, volume, kilntype)
 
                 End If
@@ -245,11 +266,15 @@ Public Class AlgoSeq2
                 'MsgBox(opRec)
                 opTimes += preactor.ReadFieldDouble("Orders", "Op. Time per Item", opRec)
                 duration += TimeSpan.FromDays(opTimes)
-                MsgBox(orderno & "    RecNo:" & opRec & "    Duration:" & duration.ToString())
+                If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DiagnosticPopups) Then
+                    MsgBox(orderno & "    RecNo:" & opRec & "    Duration:" & duration.ToString())
+                End If
                 opRec = preactor.FindMatchingRecord("Orders", "Order No.", opRec, orderno)
             End While
             'opTimes = opTime
-            MsgBox(orderno & "duration total:" & duration.ToString())
+            If SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.DiagnosticPopups) Then
+                MsgBox(orderno & "duration total:" & duration.ToString())
+            End If
             parentRecord = preactor.FindMatchingRecord(ordersParent, parentRecord, -1)
         End While
 
@@ -361,9 +386,25 @@ Public Class AlgoSeq2
             ' Write headers
             Dim columnNames = dt.Columns.Cast(Of DataColumn)().Select(Function(col) col.ColumnName)
             writer.WriteLine(String.Join(",", columnNames))
-            ' Write rows
+            ' Reuse the field buffer; retain the legacy comma-to-space format.
+            Dim fields(dt.Columns.Count - 1) As String
+            Dim directReads As Boolean = True
+            For Each column As DataColumn In dt.Columns
+                Dim valueType As Type = column.DataType
+                If Not (valueType.IsPrimitive OrElse valueType Is GetType(String) OrElse
+                        valueType Is GetType(Decimal) OrElse valueType Is GetType(DateTime) OrElse
+                        valueType Is GetType(TimeSpan) OrElse valueType Is GetType(Guid)) Then
+                    directReads = False
+                    Exit For
+                End If
+            Next
             For Each row As DataRow In dt.Rows
-                Dim fields = row.ItemArray.Select(Function(field) field.ToString().Replace(",", " "))
+                ' Object/custom columns retain snapshot semantics if ToString mutates the row.
+                Dim snapshot As Object() = If(directReads, Nothing, row.ItemArray)
+                For columnIndex As Integer = 0 To fields.Length - 1
+                    Dim value As Object = If(directReads, row(columnIndex), snapshot(columnIndex))
+                    fields(columnIndex) = value.ToString().Replace(",", " ")
+                Next
                 writer.WriteLine(String.Join(",", fields))
             Next
         End Using

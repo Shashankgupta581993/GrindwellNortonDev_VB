@@ -90,7 +90,7 @@ Public Class firingOptimizer_vf
 
         ' Build candidates per order (Batch-only + op300 exists + readiness computed from <290)
         Dim candidates As List(Of OrderCandidate) = BuildCandidates(dt)
-        If debug IsNot Nothing AndAlso debug.Enabled Then
+        If debug IsNot Nothing AndAlso debug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then
             Dim candidateIds As New HashSet(Of Integer)(candidates.Select(Function(x) x.FiringOpRec))
             Dim beforeCount As Integer = dt.AsEnumerable().Count(Function(r) SafeInt(r(COL_OPNO)) = 300 AndAlso SafeInt(r(COL_KILNTYPE)) = 1)
             For Each r As DataRow In dt.Rows
@@ -263,96 +263,6 @@ Public Class firingOptimizer_vf
     '  Candidate building
     ' ============================================================
 
-    'Private Function BuildCandidates(dt As DataTable) As List(Of OrderCandidate)
-
-    '    Dim readyByOrder As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
-
-    '    ' readiness = max scheduled_end_time among scheduled ops with op < 290
-    '    For Each r As DataRow In dt.Rows
-    '        If Not SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
-    '        Dim opNo As Integer = SafeInt(r(COL_OPNO))
-    '        If opNo >= 290 Then Continue For
-
-    '        Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
-    '        If orderNo = "" Then Continue For
-
-    '        Dim endT As DateTime = SafeDate(r(COL_SCHED_END))
-    '        If endT = DateTime.MinValue Then Continue For
-
-    '        If Not readyByOrder.ContainsKey(orderNo) OrElse endT > readyByOrder(orderNo) Then
-    '            readyByOrder(orderNo) = endT
-    '        End If
-    '    Next
-
-    '    ' Does the export include prev_op_is_scheduled?
-    '    Dim hasPrevCol As Boolean = dt.Columns.Contains(COL_PREVOP_IS_SCH)
-
-    '    ' build per-order from op 300 row (firing)
-    '    Dim list As New List(Of OrderCandidate)()
-
-    '    For Each r As DataRow In dt.Rows
-
-    '        Dim kilnType As String = SafeStr(r(COL_KILNTYPE)).Trim()
-    '        If Not kilnType.Equals("1", StringComparison.OrdinalIgnoreCase) Then Continue For '' this is where I made the Kiln Type change
-
-    '        Dim opNo As Integer = SafeInt(r(COL_OPNO))
-    '        If opNo <> 300 Then Continue For
-    '        If SafeBool(r(COL_IS_SCHEDULED)) Then Continue For
-
-    '        Dim orderNo As String = SafeStr(r(COL_ORDERNO)).Trim()
-    '        If orderNo = "" Then Continue For
-    '        If Not readyByOrder.ContainsKey(orderNo) Then Continue For
-
-    '        Dim cycle As String = SafeStr(r(COL_CYCLE)).Trim().ToUpperInvariant()
-    '        If Not IsKnownCycle(cycle) Then Continue For
-
-    '        Dim occ As Double = SafeDbl(r(COL_OCC))
-    '        If occ <= 0 Then Continue For
-
-    '        Dim fireMins As Integer = CInt(Math.Truncate(SafeDbl(r(COL_BATCHTIME))))
-    '        If fireMins <= 0 Then Continue For
-
-    '        Dim firingDue As DateTime = ParseDueAsEndOfDay(r(COL_FIRING_DUE))
-    '        If firingDue = DateTime.MinValue Then Continue For
-
-    '        ' loading time must come from 290/291 rows; we’ll collect it separately by scanning dt
-    '        Dim loadMins As Integer = FindMaxLoadingMins(dt, orderNo)
-    '        ' If missing, assume 0 (your current export has 0 everywhere). Logic still works.
-    '        If loadMins < 0 Then loadMins = 0
-
-    '        Dim firingOpRec As Integer = SafeInt(r(COL_OPREC))
-    '        If firingOpRec <= 0 Then Continue For
-
-    '        Dim ready As DateTime = readyByOrder(orderNo)
-
-    '        ' NEW: previous op scheduled flag (optional column)
-    '        Dim prevScheduled As Boolean = False
-    '        If hasPrevCol Then
-    '            Try
-    '                prevScheduled = SafeBool(r(COL_PREVOP_IS_SCH))
-    '            Catch ex As Exception
-    '                prevScheduled = False
-    '            End Try
-    '        End If
-
-    '        list.Add(New OrderCandidate With {
-    '            .OrderNo = orderNo,
-    '            .FiringOpRec = firingOpRec,
-    '            .CycleType = cycle,
-    '            .Occ = occ,
-    '            .ReadyTime = ready,
-    '            .DueTime = firingDue,
-    '            .FireMins = fireMins,
-    '            .LoadMins = loadMins,
-    '            .PrevOpIsScheduled = prevScheduled
-    '        })
-    '    Next
-
-    '    ' … rest of method unchanged (sort/return) …
-
-
-    '    Return list
-    'End Function
 
     ' =====================================================================
     ' BuildCandidates – now uses last pre-290 op as readiness
@@ -1077,13 +987,7 @@ Public Class firingOptimizer_vf
         Return c = "150VT" OrElse c = "102VT" OrElse c = "65VT"
     End Function
 
-    'Private Function IsTruthy(s As String) As Boolean
-    '    Return SharedHelpers.IsTruthy(s)
-    'End Function
 
-    'Private Function SafeArray(arr As String(), idx As Integer) As String
-    '    Return SharedHelpers.SafeArray(arr, idx)
-    'End Function
 
     ' ============================================================
     '  Internal classes
@@ -1127,6 +1031,7 @@ Public Class firingOptimizer_vf
     ' - BatchPlan_Debug is one row per queue item (per firing opRec)
     ' - If you later add more per-order attributes into the plan, you can enrich the debug export easily.
     Public Sub ExportPlanToCsv(plan As FiringBatchPlan, folderPath As String)
+        If Not SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.BatchDebugCsv) Then Return
 
         If plan Is Nothing Then Throw New ArgumentNullException(NameOf(plan))
         If String.IsNullOrWhiteSpace(folderPath) Then Throw New ArgumentException("folderPath is empty.")
@@ -1285,6 +1190,7 @@ Public Class firingOptimizer_vf
     '  DEBUG: Export firing candidate filter analysis to CSV
     ' =====================================================================
     Public Sub ExportFiringCandidateDebug(dt As DataTable, debugFolderPath As String)
+        If Not SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.BatchDebugCsv) Then Return
 
         If dt Is Nothing Then Throw New ArgumentNullException(NameOf(dt))
         If String.IsNullOrWhiteSpace(debugFolderPath) Then Throw New ArgumentException("debugFolderPath is empty.")

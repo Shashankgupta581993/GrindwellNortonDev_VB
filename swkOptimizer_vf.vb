@@ -235,7 +235,7 @@ Public Class swkOptimizer_vf
         Dim loadingMinsByOrder As Dictionary(Of String, Integer) = BuildLoadingMinsByOrder(dt)
         Dim hasPrevCol As Boolean = dt.Columns.Contains(COL_PREVOP_IS_SCH)
         Dim beforeCount As Integer = 0
-        If debug IsNot Nothing AndAlso debug.Enabled Then
+        If debug IsNot Nothing AndAlso debug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then
             beforeCount = dt.AsEnumerable().Count(
                 Function(row) SharedHelpers.SafeInt(row(COL_OPNO)) = 300)
         End If
@@ -559,7 +559,7 @@ Public Class swkOptimizer_vf
                                        included As Boolean,
                                        reasonCode As String,
                                        reasonDetail As String)
-        If debug Is Nothing OrElse Not debug.Enabled Then Return
+        If debug Is Nothing OrElse Not debug.Collects(SchedulerDebugChannel.OptimizerCandidateTrace) Then Return
 
         debug.TraceCandidateStep(New OptimizerCandidateTraceRow With {
             .OptimizerName = "swkOptimizer_vf",
@@ -606,6 +606,7 @@ Public Class swkOptimizer_vf
     End Sub
 
     Public Sub ExportSwkPlanToCsv(plan As SwkBatchPlan, folderPath As String)
+        If Not SchedulerDebugSettings.IsEnabled(SchedulerDebugChannel.SwkDebugCsv) Then Return
 
         If plan Is Nothing Then Throw New ArgumentNullException(NameOf(plan))
         If String.IsNullOrWhiteSpace(folderPath) Then Throw New ArgumentException("folderPath is empty.")
@@ -622,24 +623,30 @@ Public Class swkOptimizer_vf
             Dim batchNos As New List(Of Integer)(plan.BatchStartByBatchNo.Keys)
             batchNos.Sort()
 
-            For Each b In batchNos
-
-                Dim orderCount As Integer = 0
-                For Each kvp In plan.BatchNoByFiringOpRec
-                    If kvp.Value = b Then orderCount += 1
+            Dim orderCounts As New Dictionary(Of Integer, Integer)()
+            If batchNos.Count > 0 Then
+                For Each pair In plan.BatchNoByFiringOpRec
+                    Dim count As Integer
+                    orderCounts.TryGetValue(pair.Value, count)
+                    orderCounts(pair.Value) = count + 1
                 Next
+            End If
 
-                w.WriteLine(String.Join(",", New String() {
-                    b.ToString(CultureInfo.InvariantCulture),
-                    SharedHelpers.Csv(plan.ResourceByBatchNo(b)),
-                    SharedHelpers.Csv(plan.CycleByBatchNo(b)),
-                    SharedHelpers.Csv(SharedHelpers.FormatDateOrBlank(plan.BatchStartByBatchNo(b))),
-                    SharedHelpers.Csv(SharedHelpers.FormatDateOrBlank(plan.BatchEndByBatchNo(b))),
-                    plan.TotalTonnageByBatchNo(b).ToString(CultureInfo.InvariantCulture),
-                    orderCount.ToString(CultureInfo.InvariantCulture),
-                    plan.LateCountByBatchNo(b).ToString(CultureInfo.InvariantCulture),
-                    plan.UnderfilledByBatchNo(b).ToString(CultureInfo.InvariantCulture)
-                }))
+            Dim summaryFields(8) As String
+            For Each b In batchNos
+                Dim orderCount As Integer
+                orderCounts.TryGetValue(b, orderCount)
+
+                summaryFields(0) = b.ToString(CultureInfo.InvariantCulture)
+                summaryFields(1) = SharedHelpers.Csv(plan.ResourceByBatchNo(b))
+                summaryFields(2) = SharedHelpers.Csv(plan.CycleByBatchNo(b))
+                summaryFields(3) = SharedHelpers.Csv(SharedHelpers.FormatDateOrBlank(plan.BatchStartByBatchNo(b)))
+                summaryFields(4) = SharedHelpers.Csv(SharedHelpers.FormatDateOrBlank(plan.BatchEndByBatchNo(b)))
+                summaryFields(5) = plan.TotalTonnageByBatchNo(b).ToString(CultureInfo.InvariantCulture)
+                summaryFields(6) = orderCount.ToString(CultureInfo.InvariantCulture)
+                summaryFields(7) = plan.LateCountByBatchNo(b).ToString(CultureInfo.InvariantCulture)
+                summaryFields(8) = plan.UnderfilledByBatchNo(b).ToString(CultureInfo.InvariantCulture)
+                w.WriteLine(String.Join(",", summaryFields))
 
             Next
 
@@ -649,21 +656,21 @@ Public Class swkOptimizer_vf
 
             w.WriteLine("QueueIndex,FiringOpRec,BatchNo,BatchStart,BatchEnd,Resource,CycleType,TotalTonnage")
 
+            Dim queueFields(7) As String
             For i As Integer = 0 To plan.QueueFiringOpRecs.Count - 1
 
                 Dim firingOpRec As Integer = plan.QueueFiringOpRecs(i)
                 Dim batchNo As Integer = plan.BatchNoByFiringOpRec(firingOpRec)
 
-                w.WriteLine(String.Join(",", New String() {
-                    (i + 1).ToString(CultureInfo.InvariantCulture),
-                    firingOpRec.ToString(CultureInfo.InvariantCulture),
-                    batchNo.ToString(CultureInfo.InvariantCulture),
-                    SharedHelpers.Csv(SharedHelpers.FormatDateOrBlank(plan.BatchStartByBatchNo(batchNo))),
-                    SharedHelpers.Csv(SharedHelpers.FormatDateOrBlank(plan.BatchEndByBatchNo(batchNo))),
-                    SharedHelpers.Csv(plan.ResourceByBatchNo(batchNo)),
-                    SharedHelpers.Csv(plan.CycleByBatchNo(batchNo)),
-                    plan.TotalTonnageByBatchNo(batchNo).ToString(CultureInfo.InvariantCulture)
-                }))
+                queueFields(0) = (i + 1).ToString(CultureInfo.InvariantCulture)
+                queueFields(1) = firingOpRec.ToString(CultureInfo.InvariantCulture)
+                queueFields(2) = batchNo.ToString(CultureInfo.InvariantCulture)
+                queueFields(3) = SharedHelpers.Csv(SharedHelpers.FormatDateOrBlank(plan.BatchStartByBatchNo(batchNo)))
+                queueFields(4) = SharedHelpers.Csv(SharedHelpers.FormatDateOrBlank(plan.BatchEndByBatchNo(batchNo)))
+                queueFields(5) = SharedHelpers.Csv(plan.ResourceByBatchNo(batchNo))
+                queueFields(6) = SharedHelpers.Csv(plan.CycleByBatchNo(batchNo))
+                queueFields(7) = plan.TotalTonnageByBatchNo(batchNo).ToString(CultureInfo.InvariantCulture)
+                w.WriteLine(String.Join(",", queueFields))
 
             Next
 

@@ -9,13 +9,18 @@ Imports Preactor
 Public Class SchedulerStageDiagnostics
     Public Shared Function BuildOrderOperationSnapshot(preactor As IPreactor,
                                                        debug As SchedulerDebugCollector) As List(Of OperationSnapshot)
+        Dim result As New List(Of OperationSnapshot)()
+        If debug Is Nothing OrElse (Not debug.NeedsSnapshot AndAlso
+           Not debug.Collects(SchedulerDebugChannel.FieldMap)) Then Return result
         Dim cache As New SchedulerDebugFieldCache(preactor)
         debug.FieldMapRows.Clear()
-        For Each fieldRow In cache.FieldMapRows
-            debug.AddFieldMap(fieldRow)
-        Next
+        If debug.Collects(SchedulerDebugChannel.FieldMap) Then
+            For Each fieldRow In cache.FieldMapRows
+                debug.AddFieldMap(fieldRow)
+            Next
+        End If
+        If Not debug.NeedsSnapshot Then Return result
 
-        Dim result As New List(Of OperationSnapshot)()
         Dim board As IPlanningBoard = preactor.PlanningBoard
         Dim count As Integer = preactor.RecordCount(cache.OrdersFormatNumber)
         For rec As Integer = 1 To count
@@ -94,6 +99,7 @@ Public Class SchedulerStageDiagnostics
     End Function
 
     Public Shared Sub DiagnoseWip(snapshot As List(Of OperationSnapshot), debug As SchedulerDebugCollector)
+        If debug Is Nothing OrElse Not debug.Collects(SchedulerDebugChannel.WipDiagnostics) Then Return
         debug.WipDiagnostics.Clear()
         Dim byRecord As Dictionary(Of Integer, OperationSnapshot) = snapshot.ToDictionary(Function(x) x.RecordNo)
         For Each op In snapshot
@@ -133,24 +139,30 @@ Public Class SchedulerStageDiagnostics
     End Sub
 
     Public Shared Sub DiagnosePressingEligibility(snapshot As List(Of OperationSnapshot), debug As SchedulerDebugCollector)
+        If debug Is Nothing OrElse Not debug.Collects(SchedulerDebugChannel.StageEligibility) Then Return
         DiagnoseSimpleStage(snapshot.Where(Function(x) x.OperationNumber >= 200 AndAlso x.OperationNumber <= 280),
                             debug, "Pressing", True, True)
     End Sub
     Public Shared Sub DiagnoseDryingEligibility(snapshot As List(Of OperationSnapshot), debug As SchedulerDebugCollector)
+        If debug Is Nothing OrElse Not debug.Collects(SchedulerDebugChannel.StageEligibility) Then Return
         DiagnoseSimpleStage(snapshot.Where(Function(x) x.OperationNumber > 200 AndAlso x.OperationNumber < 290 AndAlso
                                                        x.OperationNumber <> 290 AndAlso x.OperationNumber <> 300 AndAlso x.OperationNumber <> 310),
                             debug, "Drying", True, False)
     End Sub
     Public Shared Sub DiagnoseBatchFiringEligibility(snapshot As List(Of OperationSnapshot), debug As SchedulerDebugCollector)
+        If debug Is Nothing OrElse Not debug.Collects(SchedulerDebugChannel.StageEligibility) Then Return
         DiagnoseFiring(snapshot, debug, "BatchFiring", Function(k) IsKiln(k, "BATCH", "1"))
     End Sub
     Public Shared Sub DiagnoseTunnelFiringEligibility(snapshot As List(Of OperationSnapshot), debug As SchedulerDebugCollector)
+        If debug Is Nothing OrElse Not debug.Collects(SchedulerDebugChannel.StageEligibility) Then Return
         DiagnoseFiring(snapshot, debug, "TunnelFiring", Function(k) IsKiln(k, "TUNNEL", "2"))
     End Sub
     Public Shared Sub DiagnoseSwkFiringEligibility(snapshot As List(Of OperationSnapshot), debug As SchedulerDebugCollector)
+        If debug Is Nothing OrElse Not debug.Collects(SchedulerDebugChannel.StageEligibility) Then Return
         DiagnoseFiring(snapshot, debug, "SWK", Function(k) IsKiln(k, "SWK", "3"))
     End Sub
     Public Shared Sub DiagnosePostFiringEligibility(snapshot As List(Of OperationSnapshot), debug As SchedulerDebugCollector)
+        If debug Is Nothing OrElse Not debug.Collects(SchedulerDebugChannel.StageEligibility) Then Return
         DiagnoseSimpleStage(snapshot.Where(Function(x) x.OperationNumber >= 320 AndAlso x.OperationNumber < 400),
                             debug, "FiringFollowOn", True, False)
         DiagnoseSimpleStage(snapshot.Where(Function(x) x.OperationNumber >= 400),
@@ -158,6 +170,7 @@ Public Class SchedulerStageDiagnostics
     End Sub
 
     Public Shared Sub DiagnoseAll(snapshot As List(Of OperationSnapshot), debug As SchedulerDebugCollector)
+        If debug Is Nothing OrElse Not debug.Collects(SchedulerDebugChannel.StageEligibility) Then Return
         debug.StageEligibilityRows.Clear()
         DiagnosePressingEligibility(snapshot, debug)
         DiagnoseDryingEligibility(snapshot, debug)
@@ -192,19 +205,37 @@ Public Class SchedulerStageDiagnostics
 
     Private Shared Sub DiagnoseFiring(snapshot As List(Of OperationSnapshot), debug As SchedulerDebugCollector,
                                       stage As String, kilnMatch As Func(Of String, Boolean))
+        ' Pre-size one compact index using the upper bound on firing parents.
+        ' Parent 0 and negative parents deliberately retain the original grouping.
+        Dim firingCount As Integer = 0
+        For Each item In snapshot
+            If item.OperationNumber = 300 Then firingCount += 1
+        Next
+        Dim parentStages As New Dictionary(Of Integer, Integer)(firingCount)
+        For Each item In snapshot
+            If item.OperationNumber = 300 Then parentStages(item.ParentRecordNo) = 0
+        Next
+        For Each item In snapshot
+            If item.OperationNumber <> 290 AndAlso item.OperationNumber <> 310 Then Continue For
+            Dim stages As Integer
+            If parentStages.TryGetValue(item.ParentRecordNo, stages) Then
+                ' Bit 1 = loading; bit 2 = unloading. These are bitwise operators.
+                parentStages(item.ParentRecordNo) = stages Or If(item.OperationNumber = 290, 1, 2)
+            End If
+        Next
         Dim rank As Integer
         For Each op In snapshot.Where(Function(x) x.OperationNumber = 300 AndAlso kilnMatch(x.KilnType)).
                                 OrderBy(Function(x) x.DueDate)
             rank += 1
-            Dim chain = snapshot.Where(Function(x) x.ParentRecordNo = op.ParentRecordNo).ToList()
+            Dim stages As Integer = parentStages(op.ParentRecordNo)
             Dim code As String = SchedulerDebugReasonCodes.OK_INCLUDED
             Dim detail As String = "Eligible for firing optimizer consideration."
             Dim candidate As Boolean = True
             If op.IsScheduled Then
                 candidate = False : code = SchedulerDebugReasonCodes.OK_ALREADY_SCHEDULED : detail = "Already scheduled."
-            ElseIf Not chain.Any(Function(x) x.OperationNumber = 290) Then
+            ElseIf (stages And 1) = 0 Then
                 candidate = False : code = SchedulerDebugReasonCodes.FIRING_LOADING_OP_MISSING : detail = "Operation 290 is missing."
-            ElseIf Not chain.Any(Function(x) x.OperationNumber = 310) Then
+            ElseIf (stages And 2) = 0 Then
                 candidate = False : code = SchedulerDebugReasonCodes.FIRING_UNLOADING_OP_MISSING : detail = "Operation 310 is missing."
             ElseIf op.PrevOperationRecordNo > 0 AndAlso Not op.PrevOperationIsScheduled Then
                 candidate = False : code = SchedulerDebugReasonCodes.FIRING_PREV_OP_NOT_READY : detail = "Previous operation is not scheduled."
