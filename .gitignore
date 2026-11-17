@@ -366,3 +366,8 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Local Codex instructions and reference material
+/AGENTS.md
+/docs/opcenter/
+/docs/project/
